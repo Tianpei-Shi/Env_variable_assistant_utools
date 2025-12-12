@@ -56,10 +56,17 @@ export default function App() {
           if (record.tabType === 'groups') {
             // Restore group
             const groupId = record.data.id || `group-${Date.now()}`
+            const existing = utools.db.get(`${prefix}${groupId}`)
+            // 移除不需要保存到 data 中的字段
+            const groupDataToSave = { ...data }
+            delete groupDataToSave.id
+            delete groupDataToSave._rev
+
             utools.db.put({
               _id: `${prefix}${groupId}`,
+              _rev: existing?._rev,
               data: {
-                ...data,
+                ...groupDataToSave,
                 isActive: false, // Always restore as inactive
                 updatedAt: new Date().toISOString(),
               }
@@ -70,13 +77,15 @@ export default function App() {
               await window.services.setEnvironmentVariable(record.name, record.data.value, false)
               await window.services.refreshEnvironment()
             }
+            const existingVar = utools.db.get(`${prefix}${record.name}`)
             utools.db.put({
               _id: `${prefix}${record.name}`,
+              _rev: existingVar?._rev,
               data: {
                 name: record.name,
                 value: record.data.value,
                 isSystemOriginal: false,
-                createdAt: new Date().toISOString(),
+                createdAt: existingVar?.data?.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               }
             })

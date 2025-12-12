@@ -149,6 +149,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
           .map(doc => ({
             ...doc.data,
             id: doc._id.replace(prefix, ''),
+            _rev: doc._rev,
             isSystemVariable: false
           }))
       } else {
@@ -182,13 +183,15 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
           if (group.isActive !== actualActiveStatus) {
             try {
               if (window.utools && window.utools.db) {
+                // 准备保存的数据，移除不需要保存的字段
+                const groupDataToSave = { ...group, isActive: actualActiveStatus, updatedAt: new Date().toISOString() }
+                delete groupDataToSave.id
+                delete groupDataToSave._rev
+
                 utools.db.put({
                   _id: `${prefix}${group.id}`,
-                  data: {
-                    ...group,
-                    isActive: actualActiveStatus,
-                    updatedAt: new Date().toISOString()
-                  }
+                  _rev: group._rev,
+                  data: groupDataToSave
                 })
               }
             } catch (error) {
@@ -297,11 +300,16 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
         isActive: !currentActive,
         updatedAt: new Date().toISOString()
       }
+      // 移除不需要保存的字段
       delete groupData.id
+      delete groupData._rev
 
       if (window.utools && window.utools.db) {
+        // 获取现有文档以获取 _rev（用于更新）
+        const existingDoc = utools.db.get(`${prefix}${groupId}`)
         utools.db.put({
           _id: `${prefix}${groupId}`,
+          _rev: existingDoc?._rev,
           data: groupData
         })
       }
@@ -430,11 +438,12 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
         ? editingGroup.id
         : `group-${Date.now()}`
 
+      // 编辑模式下保留原有的 isActive 状态
       const groupData = {
         name: groupName.trim(),
         description: groupDescription.trim(),
         variables: validVariables,
-        isActive: false,
+        isActive: modalMode === 'edit' && editingGroup ? editingGroup.isActive : false,
         isSystemVariable: false,
         createdAt: modalMode === 'edit' && editingGroup ? editingGroup.createdAt : new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -452,8 +461,11 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
       }
 
       if (window.utools && window.utools.db) {
+        // 获取现有文档以获取 _rev（用于更新）
+        const existingDoc = utools.db.get(`${prefix}${groupId}`)
         utools.db.put({
           _id: `${prefix}${groupId}`,
+          _rev: existingDoc?._rev,
           data: groupData
         })
       }
