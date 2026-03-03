@@ -1,4 +1,58 @@
 import { useState, useCallback } from 'react'
+import { LOG_POLICY } from '../utils/logPolicy'
+
+function getTrashPrefix(tabType) {
+  return `trash-history-${tabType}-`
+}
+
+export function clearTrashRecordsByType(tabType, options = {}) {
+  try {
+    if (!(window.utools && window.utools.db)) {
+      return 0
+    }
+
+    const trashPrefix = getTrashPrefix(tabType)
+    const allDocs = utools.db
+      .allDocs(trashPrefix)
+      .filter(doc => doc?.data)
+      .sort((a, b) => new Date(b.data?.timestamp || 0) - new Date(a.data?.timestamp || 0))
+    let deletedCount = 0
+
+    if (options.enabled) {
+      const cleanupDays = Number(options.days) || 30
+      const cutoffDate = new Date()
+      cutoffDate.setDate(cutoffDate.getDate() - cleanupDays)
+      const cutoffTimestamp = cutoffDate.toISOString()
+
+      for (const doc of allDocs) {
+        if (doc.data?.timestamp && doc.data.timestamp < cutoffTimestamp) {
+          utools.db.remove(doc)
+          deletedCount++
+        }
+      }
+    }
+
+    const maxRecords = Number(options.maxRecords) || LOG_POLICY.maxTrashRecordsPerType
+    if (maxRecords > 0) {
+      const latestDocs = utools.db
+        .allDocs(trashPrefix)
+        .filter(doc => doc?.data)
+        .sort((a, b) => new Date(b.data?.timestamp || 0) - new Date(a.data?.timestamp || 0))
+
+      if (latestDocs.length > maxRecords) {
+        latestDocs.slice(maxRecords).forEach((doc) => {
+          utools.db.remove(doc)
+          deletedCount++
+        })
+      }
+    }
+
+    return deletedCount
+  } catch (error) {
+    console.error(`清理 ${tabType} 历史记录失败:`, error)
+    return 0
+  }
+}
 
 /**
  * Hook for managing trash history records
@@ -6,10 +60,8 @@ import { useState, useCallback } from 'react'
  */
 export function useTrashHistory(tabType) {
   const [records, setRecords] = useState([])
-  const [settings, setSettings] = useState({ autoCleanupDays: 30 })
 
-  const TRASH_PREFIX = `trash-history-${tabType}-`
-  const SETTINGS_KEY = `trash-settings-${tabType}`
+  const TRASH_PREFIX = getTrashPrefix(tabType)
 
   // Load records from database
   const loadRecords = useCallback(() => {
@@ -24,23 +76,18 @@ export function useTrashHistory(tabType) {
             _rev: doc._rev,
           }))
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-        
-        setRecords(loaded)
-        
-        // Load settings
-        const settingsDoc = utools.db.get(SETTINGS_KEY)
-        if (settingsDoc && settingsDoc.data) {
-          setSettings(settingsDoc.data)
-        }
-        
-        return loaded
+
+        const latest = loaded.slice(0, LOG_POLICY.maxTrashRecordsPerType)
+        setRecords(latest)
+
+        return latest
       }
       return []
     } catch (error) {
       console.error('加载历史记录失败:', error)
       return []
     }
-  }, [TRASH_PREFIX, SETTINGS_KEY])
+  }, [TRASH_PREFIX])
 
   // Add a record to trash history
   const addToTrash = useCallback((record) => {
@@ -58,9 +105,13 @@ export function useTrashHistory(tabType) {
           _id: `${TRASH_PREFIX}${id}`,
           data: fullRecord,
         })
+        clearTrashRecordsByType(tabType, {
+          enabled: false,
+          maxRecords: LOG_POLICY.maxTrashRecordsPerType,
+        })
       }
 
-      setRecords(prev => [fullRecord, ...prev])
+      setRecords(prev => [fullRecord, ...prev].slice(0, LOG_POLICY.maxTrashRecordsPerType))
       return true
     } catch (error) {
       console.error('添加历史记录失败:', error)
@@ -86,58 +137,47 @@ export function useTrashHistory(tabType) {
     }
   }, [TRASH_PREFIX])
 
-  // Clear old records based on settings
-  const clearOldRecords = useCallback(() => {
+  // Clear all records for current tab type
+  const clearAllTrash = useCallback(() => {
     try {
-      const cutoffDate = new Date()
-      cutoffDate.setDate(cutoffDate.getDate() - settings.autoCleanupDays)
-      const cutoffTimestamp = cutoffDate.toISOString()
-
       if (window.utools && window.utools.db) {
         const allDocs = utools.db.allDocs(TRASH_PREFIX)
-        let deletedCount = 0
-        
-        for (const doc of allDocs) {
-          if (doc.data && doc.data.timestamp < cutoffTimestamp) {
+        allDocs.forEach((doc) => {
+          try {
             utools.db.remove(doc)
-            deletedCount++
+          } catch (error) {
+            console.error('清空历史记录文档失败:', error)
           }
-        }
-
-        if (deletedCount > 0) {
-          setRecords(prev => prev.filter(r => r.timestamp >= cutoffTimestamp))
-        }
-        
-        return deletedCount
+        })
       }
-      return 0
+
+      setRecords([])
+      return true
+    } catch (error) {
+      console.error('清空历史记录失败:', error)
+      return false
+    }
+  }, [TRASH_PREFIX])
+
+  // Clear old records based on external settings
+  const clearOldRecords = useCallback((options = {}) => {
+    try {
+      const deletedCount = clearTrashRecordsByType(tabType, {
+        enabled: options.enabled,
+        days: options.days,
+        maxRecords: options.maxRecords ?? LOG_POLICY.maxTrashRecordsPerType,
+      })
+
+      if (deletedCount > 0) {
+        loadRecords()
+      }
+
+      return deletedCount
     } catch (error) {
       console.error('清理旧记录失败:', error)
       return 0
     }
-  }, [TRASH_PREFIX, settings.autoCleanupDays])
-
-  // Update auto-cleanup settings
-  const updateSettings = useCallback((newSettings) => {
-    try {
-      const merged = { ...settings, ...newSettings }
-      
-      if (window.utools && window.utools.db) {
-        const existing = utools.db.get(SETTINGS_KEY)
-        utools.db.put({
-          _id: SETTINGS_KEY,
-          _rev: existing?._rev,
-          data: merged,
-        })
-      }
-
-      setSettings(merged)
-      return true
-    } catch (error) {
-      console.error('更新设置失败:', error)
-      return false
-    }
-  }, [SETTINGS_KEY, settings])
+  }, [tabType, loadRecords])
 
   // Get record count
   const getRecordCount = useCallback(() => {
@@ -150,12 +190,11 @@ export function useTrashHistory(tabType) {
 
   return {
     records,
-    settings,
     loadRecords,
     addToTrash,
     deleteFromTrash,
+    clearAllTrash,
     clearOldRecords,
-    updateSettings,
     getRecordCount,
   }
 }

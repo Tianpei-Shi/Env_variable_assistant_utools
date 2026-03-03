@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
 import {
   Plus, Search, Settings, Eye, EyeOff, Copy, Trash2,
-  Edit2, Check, X, Power, PowerOff, Lock, RefreshCw,
+  Edit2, Check, X, Power, PowerOff, RefreshCw,
   ChevronDown, ChevronUp, AlertCircle, Loader2, CheckSquare, Square
 } from 'lucide-react'
 import { cn } from './utils/cn'
 import { useTrashHistory } from './hooks/useTrashHistory'
+import { getFontClass } from './utils/fontLevel'
 
-export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
+export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSettings, notificationSettings }) {
   // Trash history hook
   const { addToTrash } = useTrashHistory('groups')
   // State management
@@ -17,9 +18,6 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
   const [isDetectingStates, setIsDetectingStates] = useState(false)
 
   // UI state
-  const [showSystemVariables, setShowSystemVariables] = useState(false)
-  const [systemVariables, setSystemVariables] = useState([])
-  const [isLoadingSystemVars, setIsLoadingSystemVars] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState(new Set())
   const [hiddenValues, setHiddenValues] = useState(new Set())
 
@@ -44,11 +42,25 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
   // Toast notification state
   const [toast, setToast] = useState(null)
 
+  const displayKeyFontClass = getFontClass(fontSettings?.displayKeySize, 2)
+  const displayValueFontClass = getFontClass(fontSettings?.displayValueSize, 2)
+  const modalKeyFontClass = getFontClass(fontSettings?.modalKeySize, 2)
+  const modalValueFontClass = getFontClass(fontSettings?.modalValueSize, 2)
+
   // Helper: Show toast
   const showToast = (message, type = 'info') => {
-    if (window.utools && window.utools.showNotification) {
+    const desktopEnabled = notificationSettings?.desktopEnabled === true
+    const inAppEnabled = notificationSettings?.inAppEnabled !== false
+
+    if (desktopEnabled && window.utools && window.utools.showNotification) {
       window.utools.showNotification(message)
     }
+
+    if (!inAppEnabled) {
+      setToast(null)
+      return
+    }
+
     setToast({ message, type })
     setTimeout(() => setToast(null), 3000)
   }
@@ -100,22 +112,28 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
     return !!(window.services && typeof window.services === 'object')
   }
 
-  // Check single environment variable
-  const checkEnvironmentVariable = async (variableName) => {
+  const normalizeEnvName = (name = '') => name.toUpperCase()
+
+  // Get current user environment variables from system
+  const getCurrentUserEnvironmentMap = async () => {
     try {
-      if (window.services && window.services.getEnvironmentVariable) {
-        const value = window.services.getEnvironmentVariable(variableName)
-        return value !== null && value !== undefined
+      if (window.services && window.services.getAllEnvironmentVariables) {
+        const envMap = await window.services.getAllEnvironmentVariables(false)
+        const normalizedMap = {}
+        Object.entries(envMap || {}).forEach(([key, value]) => {
+          normalizedMap[normalizeEnvName(key)] = value == null ? '' : String(value)
+        })
+        return normalizedMap
       }
-      return false
+      return null
     } catch (error) {
-      console.error(`检查环境变量 ${variableName} 失败:`, error)
-      return false
+      console.error('获取当前用户环境变量失败:', error)
+      return null
     }
   }
 
   // Check group active status
-  const checkGroupActiveStatus = async (group) => {
+  const checkGroupActiveStatus = async (group, currentUserEnvMap = null) => {
     try {
       if (!group.variables || group.variables.length === 0) {
         return false
@@ -123,8 +141,22 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
 
       for (const variable of group.variables) {
         if (!variable.name) continue
-        const exists = await checkEnvironmentVariable(variable.name)
-        if (!exists) {
+        const expectedValue = variable.value == null ? '' : String(variable.value)
+
+        if (currentUserEnvMap) {
+          const actualValue = currentUserEnvMap[normalizeEnvName(variable.name)]
+          if (actualValue === undefined || String(actualValue) !== expectedValue) {
+            return false
+          }
+          continue
+        }
+
+        if (!(window.services && window.services.getEnvironmentVariable)) {
+          return false
+        }
+
+        const runtimeValue = window.services.getEnvironmentVariable(variable.name)
+        if (runtimeValue === null || runtimeValue === undefined || String(runtimeValue) !== expectedValue) {
           return false
         }
       }
@@ -175,9 +207,10 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
       if (isServiceAvailable() && groups.length > 0) {
         setIsDetectingStates(true)
         const updatedGroups = []
+        const currentUserEnvMap = await getCurrentUserEnvironmentMap()
 
         for (const group of groups) {
-          const actualActiveStatus = await checkGroupActiveStatus(group)
+          const actualActiveStatus = await checkGroupActiveStatus(group, currentUserEnvMap)
           const updatedGroup = { ...group, isActive: actualActiveStatus }
 
           if (group.isActive !== actualActiveStatus) {
@@ -224,68 +257,6 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  // Load system variables
-  const loadSystemEnvironmentVariables = async () => {
-    setIsLoadingSystemVars(true)
-    try {
-      let userVars = {}
-      let systemVars = {}
-
-      if (window.services && window.services.getAllEnvironmentVariables) {
-        userVars = await window.services.getAllEnvironmentVariables(false)
-        systemVars = await window.services.getAllEnvironmentVariables(true)
-      } else {
-        // Demo data
-        userVars = {
-          'NODE_HOME': 'C:\\Program Files\\nodejs',
-          'JAVA_HOME': 'C:\\Program Files\\Java\\jdk-11'
-        }
-        systemVars = {
-          'PATH': 'C:\\Windows\\System32',
-          'WINDIR': 'C:\\Windows'
-        }
-      }
-
-      const allVars = { ...systemVars, ...userVars }
-      const systemGroups = Object.entries(allVars)
-        .filter(([name, value]) => name && value !== undefined)
-        .map(([name, value]) => {
-          const isPath = name.toUpperCase() === 'PATH'
-          const pathArray = isPath ? (value || '').split(';').filter(p => p.trim()) : []
-          const isSystemVar = systemVars.hasOwnProperty(name)
-
-          return {
-            id: `system-${isSystemVar ? 'sys' : 'user'}-${name.toLowerCase()}`,
-            name: name,
-            description: isSystemVar ? '系统级环境变量 (只读)' : '用户级环境变量 (只读)',
-            variables: [{ name, value }],
-            pathArray: isPath ? pathArray : null,
-            isPath,
-            isActive: true,
-            isSystemVariable: true,
-            isSystemLevel: isSystemVar,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }
-        })
-
-      setSystemVariables(systemGroups)
-    } catch (error) {
-      console.error('加载系统环境变量失败:', error)
-      showToast(`加载系统变量失败: ${error.message}`, 'error')
-    } finally {
-      setIsLoadingSystemVars(false)
-    }
-  }
-
-  // Toggle system variables visibility
-  const toggleSystemVariables = async () => {
-    if (!showSystemVariables && systemVariables.length === 0) {
-      await loadSystemEnvironmentVariables()
-    }
-    setShowSystemVariables(!showSystemVariables)
   }
 
   // Toggle group active status
@@ -692,17 +663,6 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
     )
   )
 
-  const allGroups = showSystemVariables
-    ? [...filteredGroups, ...systemVariables.filter(group =>
-      group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      group.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      group.variables.some(v =>
-        v.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        v.value.toLowerCase().includes(searchTerm.toLowerCase())
-      )
-    )]
-    : filteredGroups
-
   useEffect(() => {
     loadEnvironmentGroups()
   }, [])
@@ -739,7 +699,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
           <div>
             <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">环境变量管理</h1>
             <p className="text-sm text-slate-500 mt-1">
-              管理您的环境变量组 · {allGroups.length} 个组 · {allGroups.filter(g => g.isActive).length} 个已激活
+              管理您的环境变量组 · {filteredGroups.length} 个组 · {filteredGroups.filter(g => g.isActive).length} 个已激活
               {selectedGroups.size > 0 && (
                 <span className="text-blue-600 font-medium"> · 已选择 {selectedGroups.size} 个</span>
               )}
@@ -775,6 +735,22 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
               )}
             />
           </div>
+
+          <button
+            onClick={loadEnvironmentGroups}
+            disabled={isLoading || isDetectingStates}
+            className={cn(
+              "flex items-center gap-2 h-10 px-4",
+              "bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg",
+              "hover:bg-slate-50 transition-colors",
+              "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900/10",
+              (isLoading || isDetectingStates) && "opacity-60 cursor-not-allowed"
+            )}
+            title="刷新变量组"
+          >
+            <RefreshCw className={cn("w-4 h-4", (isLoading || isDetectingStates) && "animate-spin")} />
+            刷新
+          </button>
 
           {/* Batch Actions - Show when groups are selected */}
           {selectedGroups.size > 0 ? (
@@ -818,21 +794,6 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
               >
                 <Plus className="w-4 h-4" />
                 创建环境变量组
-              </button>
-
-              {/* System Variables Toggle */}
-              <button
-                onClick={toggleSystemVariables}
-                className={cn(
-                  "flex items-center gap-2 h-10 px-4",
-                  "bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg",
-                  "hover:bg-slate-50 transition-colors",
-                  "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900/10",
-                  showSystemVariables && "bg-slate-50 border-slate-300"
-                )}
-              >
-                <Lock className="w-4 h-4" />
-                {showSystemVariables ? '隐藏系统变量' : '查看系统变量'}
               </button>
             </>
           )}
@@ -878,7 +839,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
             <Loader2 className="w-8 h-8 text-slate-400 animate-spin mb-4" />
             <p className="text-sm text-slate-500">加载环境变量组...</p>
           </div>
-        ) : allGroups.length === 0 ? (
+        ) : filteredGroups.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 bg-white border border-slate-200 rounded-xl">
             <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
               <Settings className="w-8 h-8 text-slate-400" />
@@ -905,10 +866,9 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
           </div>
         ) : (
           <div className="space-y-3">
-            {allGroups.map((group) => {
+            {filteredGroups.map((group) => {
               const isExpanded = expandedGroups.has(group.id)
               const isSelected = selectedGroups.has(group.id)
-              const isUserGroup = !group.isSystemVariable
 
               return (
                 <div
@@ -917,7 +877,6 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
                     "bg-white border rounded-xl overflow-hidden",
                     "transition-all duration-200",
                     "hover:border-slate-300",
-                    group.isSystemVariable && "border-amber-200 bg-amber-50/30",
                     isSelected && "border-blue-400 bg-blue-50/30 ring-2 ring-blue-400/20"
                   )}
                 >
@@ -925,46 +884,34 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
                   <div className="p-4">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3 flex-1">
-                        {/* Checkbox for user groups */}
-                        {isUserGroup && (
-                          <button
-                            onClick={() => toggleGroupSelection(group.id)}
-                            className={cn(
-                              "w-10 h-10 rounded-lg flex items-center justify-center transition-all",
-                              "focus:outline-none focus:ring-2 focus:ring-offset-2",
-                              isSelected
-                                ? "bg-blue-100 text-blue-600 hover:bg-blue-200 focus:ring-blue-500/20"
-                                : "bg-slate-100 text-slate-400 hover:bg-slate-200 focus:ring-slate-500/20"
-                            )}
-                            title={isSelected ? '取消选择' : '选择'}
-                          >
-                            {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
-                          </button>
-                        )}
+                        <button
+                          onClick={() => toggleGroupSelection(group.id)}
+                          className={cn(
+                            "w-10 h-10 rounded-lg flex items-center justify-center transition-all",
+                            "focus:outline-none focus:ring-2 focus:ring-offset-2",
+                            isSelected
+                              ? "bg-blue-100 text-blue-600 hover:bg-blue-200 focus:ring-blue-500/20"
+                              : "bg-slate-100 text-slate-400 hover:bg-slate-200 focus:ring-slate-500/20"
+                          )}
+                          title={isSelected ? '取消选择' : '选择'}
+                        >
+                          {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                        </button>
 
                         {/* Active Toggle */}
-                        {!group.isSystemVariable && (
-                          <button
-                            onClick={() => toggleGroupActive(group.id, group.isActive)}
-                            className={cn(
-                              "w-10 h-10 rounded-lg flex items-center justify-center transition-all",
-                              "focus:outline-none focus:ring-2 focus:ring-offset-2",
-                              group.isActive
-                                ? "bg-green-100 text-green-600 hover:bg-green-200 focus:ring-green-500/20"
-                                : "bg-slate-100 text-slate-400 hover:bg-slate-200 focus:ring-slate-500/20"
-                            )}
-                            title={group.isActive ? '停用' : '激活'}
-                          >
-                            {group.isActive ? <Power className="w-5 h-5" /> : <PowerOff className="w-5 h-5" />}
-                          </button>
-                        )}
-
-                        {/* System Variable Badge */}
-                        {group.isSystemVariable && (
-                          <div className="w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center">
-                            <Lock className="w-5 h-5" />
-                          </div>
-                        )}
+                        <button
+                          onClick={() => toggleGroupActive(group.id, group.isActive)}
+                          className={cn(
+                            "w-10 h-10 rounded-lg flex items-center justify-center transition-all",
+                            "focus:outline-none focus:ring-2 focus:ring-offset-2",
+                            group.isActive
+                              ? "bg-green-100 text-green-600 hover:bg-green-200 focus:ring-green-500/20"
+                              : "bg-slate-100 text-slate-400 hover:bg-slate-200 focus:ring-slate-500/20"
+                          )}
+                          title={group.isActive ? '停用' : '激活'}
+                        >
+                          {group.isActive ? <Power className="w-5 h-5" /> : <PowerOff className="w-5 h-5" />}
+                        </button>
 
                         {/* Group Info */}
                         <div className="flex-1 min-w-0">
@@ -972,21 +919,14 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
                             <h3 className="text-base font-medium text-slate-900 truncate">
                               {group.name}
                             </h3>
-                            {group.isSystemVariable && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
-                                系统变量
-                              </span>
-                            )}
-                            {!group.isSystemVariable && (
-                              <span className={cn(
-                                "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-                                group.isActive
-                                  ? "bg-green-100 text-green-700"
-                                  : "bg-slate-100 text-slate-600"
-                              )}>
-                                {group.isActive ? '已激活' : '未激活'}
-                              </span>
-                            )}
+                            <span className={cn(
+                              "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
+                              group.isActive
+                                ? "bg-green-100 text-green-700"
+                                : "bg-slate-100 text-slate-600"
+                            )}>
+                              {group.isActive ? '已激活' : '未激活'}
+                            </span>
                           </div>
                           {group.description && (
                             <p className="text-sm text-slate-500 mt-0.5 truncate">
@@ -1003,32 +943,28 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
 
                       {/* Action Buttons */}
                       <div className="flex items-center gap-1 ml-4">
-                        {!group.isSystemVariable && (
-                          <>
-                            <button
-                              onClick={() => openEditModal(group)}
-                              className={cn(
-                                "w-8 h-8 rounded-lg flex items-center justify-center",
-                                "text-slate-600 hover:bg-slate-100 transition-colors",
-                                "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900/10"
-                              )}
-                              title="编辑"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => showDeleteConfirmation(group)}
-                              className={cn(
-                                "w-8 h-8 rounded-lg flex items-center justify-center",
-                                "text-red-600 hover:bg-red-50 transition-colors",
-                                "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500/20"
-                              )}
-                              title="删除"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
+                        <button
+                          onClick={() => openEditModal(group)}
+                          className={cn(
+                            "w-8 h-8 rounded-lg flex items-center justify-center",
+                            "text-slate-600 hover:bg-slate-100 transition-colors",
+                            "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900/10"
+                          )}
+                          title="编辑"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => showDeleteConfirmation(group)}
+                          className={cn(
+                            "w-8 h-8 rounded-lg flex items-center justify-center",
+                            "text-red-600 hover:bg-red-50 transition-colors",
+                            "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500/20"
+                          )}
+                          title="删除"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => toggleGroupExpansion(group.id)}
                           className={cn(
@@ -1066,13 +1002,13 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
                             {group.variables.map((variable, index) => (
                               <tr key={index} className="hover:bg-slate-50/50 transition-colors">
                                 <td className="px-4 py-3">
-                                  <code className="text-sm font-mono text-slate-900 bg-slate-100 px-2 py-1 rounded">
+                                  <code className={cn(displayKeyFontClass, "font-mono text-slate-900 bg-slate-100 px-2 py-1 rounded")}>
                                     {variable.name}
                                   </code>
                                 </td>
                                 <td className="px-4 py-3">
                                   <div className="flex items-center gap-2">
-                                    <code className="text-sm font-mono text-slate-600 bg-slate-50 px-2 py-1 rounded flex-1 truncate max-w-md">
+                                    <code className={cn(displayValueFontClass, "font-mono text-slate-600 bg-slate-50 px-2 py-1 rounded flex-1 truncate max-w-md")}>
                                       {isValueHidden(group.id, index)
                                         ? '••••••••••••••••'
                                         : variable.value}
@@ -1220,7 +1156,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
                           onChange={(e) => updateGroupVariable(index, 'name', e.target.value)}
                           placeholder="变量名 (如: NODE_ENV)"
                           className={cn(
-                            "h-10 px-4 text-sm font-mono",
+                            "h-10 px-4 font-mono",
+                            modalKeyFontClass,
                             "bg-white border border-slate-200 rounded-lg",
                             "placeholder:text-slate-400 text-slate-900",
                             "focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300",
@@ -1233,7 +1170,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger }) {
                           onChange={(e) => updateGroupVariable(index, 'value', e.target.value)}
                           placeholder="变量值 (如: development)"
                           className={cn(
-                            "h-10 px-4 text-sm font-mono",
+                            "h-10 px-4 font-mono",
+                            modalValueFontClass,
                             "bg-white border border-slate-200 rounded-lg",
                             "placeholder:text-slate-400 text-slate-900",
                             "focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300",

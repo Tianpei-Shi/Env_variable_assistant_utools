@@ -74,6 +74,25 @@ window.services = {
     })
   },
 
+  // 检查是否有系统环境变量写入权限（管理员权限）
+  canModifySystemEnvironment () {
+    return new Promise(async (resolve) => {
+      try {
+        if (process.platform !== 'win32') {
+          resolve(true)
+          return
+        }
+
+        const command = 'powershell -NoProfile -NonInteractive -Command "[bool](([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"'
+        const { stdout } = await execAsync(command, { encoding: 'utf8' })
+        resolve(String(stdout).trim().toLowerCase() === 'true')
+      } catch (error) {
+        console.error('检查系统环境变量权限失败:', error)
+        resolve(false)
+      }
+    })
+  },
+
   // 设置环境变量（支持用户和系统级别）
   setEnvironmentVariable (name, value, isSystemScope = false) {
     return new Promise(async (resolve, reject) => {

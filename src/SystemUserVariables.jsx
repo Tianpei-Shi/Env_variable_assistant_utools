@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Plus, Copy, Trash2, Edit2, X, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { Plus, Copy, Trash2, Edit2, X, AlertCircle, CheckCircle, Loader2, RefreshCw } from "lucide-react";
 import { cn } from "./utils/cn";
 import { useTrashHistory } from "./hooks/useTrashHistory";
+import { getFontClass } from "./utils/fontLevel";
 
-export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
+export default function SystemUserVariables({ onOpenTrash, refreshTrigger, fontSettings, notificationSettings }) {
   // Trash history hook
   const { addToTrash } = useTrashHistory('user-vars')
   const [userVariables, setUserVariables] = useState([]);
@@ -17,6 +18,10 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
 
   // 编辑 PATH 变量时的路径列表
   const [pathList, setPathList] = useState([]);
+  const displayKeyFontClass = getFontClass(fontSettings?.displayKeySize, 2);
+  const displayValueFontClass = getFontClass(fontSettings?.displayValueSize, 2);
+  const modalKeyFontClass = getFontClass(fontSettings?.modalKeySize, 2);
+  const modalValueFontClass = getFontClass(fontSettings?.modalValueSize, 2);
 
   useEffect(() => {
     loadSystemUserVariables();
@@ -46,51 +51,38 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
 
       if (window.services && window.services.getAllEnvironmentVariables) {
         const systemVars = await window.services.getAllEnvironmentVariables(false);
-        const mergedVars = [];
-        const systemVarNames = new Set(Object.keys(systemVars));
-
-        for (const dbVar of dbVars) {
-          if (systemVarNames.has(dbVar.name)) {
-            mergedVars.push({
-              ...dbVar,
-              value: systemVars[dbVar.name],
-              exists: true,
-            });
-          } else {
-            if (window.utools && window.utools.db) {
-              try {
-                utools.db.remove(`${prefix}${dbVar.name}`);
-              } catch (error) {
-                console.error(`清理变量 ${dbVar.name} 失败:`, error);
-              }
-            }
+        const managedVarMap = new Map();
+        dbVars.forEach((item) => {
+          if (item?.name) {
+            managedVarMap.set(item.name, item);
           }
-        }
+        });
 
-        for (const [name, value] of Object.entries(systemVars)) {
-          const existsInDb = dbVars.some(v => v.name === name);
-          if (!existsInDb) {
-            const newVar = {
-              name,
-              value,
-              isSystemOriginal: true,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              exists: true,
-            };
+        // 仅保留“插件管理过”的变量元数据，避免把全部系统变量镜像写入本地 DB。
+        const mergedVars = Object.entries(systemVars).map(([name, value]) => {
+          const managed = managedVarMap.get(name);
+          return {
+            name,
+            value,
+            exists: true,
+            isSystemOriginal: !managed,
+            _id: managed?._id,
+            _rev: managed?._rev,
+            createdAt: managed?.createdAt,
+            updatedAt: managed?.updatedAt,
+          };
+        });
 
-            if (window.utools && window.utools.db) {
-              try {
-                utools.db.put({
-                  _id: `${prefix}${name}`,
-                  data: newVar,
-                });
-              } catch (error) {
-                console.error(`保存变量 ${name} 失败:`, error);
-              }
+        // 清理本地中已经不存在于系统的“插件管理变量”文档，防止堆积。
+        const systemVarNames = new Set(Object.keys(systemVars));
+        if (window.utools && window.utools.db) {
+          for (const dbVar of dbVars) {
+            if (!dbVar?.name || systemVarNames.has(dbVar.name)) continue;
+            try {
+              utools.db.remove(`${prefix}${dbVar.name}`);
+            } catch (error) {
+              console.error(`清理变量 ${dbVar.name} 失败:`, error);
             }
-
-            mergedVars.push(newVar);
           }
         }
 
@@ -182,6 +174,18 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
   };
 
   const showToast = (message, type = "success") => {
+    const desktopEnabled = notificationSettings?.desktopEnabled === true;
+    const inAppEnabled = notificationSettings?.inAppEnabled !== false;
+
+    if (desktopEnabled && window.utools && window.utools.showNotification) {
+      window.utools.showNotification(message);
+    }
+
+    if (!inAppEnabled) {
+      setToast({ show: false, message: "", type: "success" });
+      return;
+    }
+
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: "", type: "success" }), 3000);
   };
@@ -310,6 +314,21 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
           )}
         />
         <button
+          onClick={loadSystemUserVariables}
+          disabled={isLoading}
+          className={cn(
+            "flex items-center gap-2 h-10 px-4 text-sm font-medium rounded-lg",
+            "bg-white border border-slate-200 text-slate-700",
+            "hover:bg-slate-50 transition-colors",
+            "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-900/10",
+            isLoading && "opacity-60 cursor-not-allowed"
+          )}
+          title="刷新变量列表"
+        >
+          <RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+          刷新
+        </button>
+        <button
           onClick={() => openEditModal()}
           className={cn(
             "flex items-center gap-2 h-10 px-4 text-sm font-medium rounded-lg",
@@ -341,7 +360,7 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
             >
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div className="flex-1">
-                  <h3 className="font-mono text-sm font-medium text-slate-900">{variable.name}</h3>
+                  <h3 className={cn("font-mono font-medium text-slate-900", displayKeyFontClass)}>{variable.name}</h3>
                   {isPathVariable(variable.name) && (
                     <span className="inline-block mt-1 px-2 py-0.5 text-xs text-blue-600 bg-blue-50 rounded">
                       PATH 变量
@@ -386,13 +405,13 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
                 {isPathVariable(variable.name) ? (
                   <div className="space-y-1">
                     {splitPathValue(variable.value).map((path, idx) => (
-                      <div key={idx} className="font-mono text-xs text-slate-700 bg-white px-3 py-2 rounded border border-slate-200">
+                      <div key={idx} className={cn("font-mono text-slate-700 bg-white px-3 py-2 rounded border border-slate-200", displayValueFontClass)}>
                         {path}
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="font-mono text-xs text-slate-700 break-all">{variable.value}</div>
+                  <div className={cn("font-mono text-slate-700 break-all", displayValueFontClass)}>{variable.value}</div>
                 )}
               </div>
             </div>
@@ -442,7 +461,8 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
                   disabled={!editingVariable.isNew}
                   placeholder="例如: MY_VAR"
                   className={cn(
-                    "w-full h-10 px-3 text-sm font-mono",
+                    "w-full h-10 px-3 font-mono",
+                    modalKeyFontClass,
                     "bg-white border border-slate-200 rounded-lg",
                     "text-slate-900 placeholder:text-slate-400",
                     "focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300",
@@ -476,7 +496,8 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
                           onChange={(e) => updatePathItem(index, e.target.value)}
                           placeholder="例如: C:\Program Files\MyApp"
                           className={cn(
-                            "flex-1 h-10 px-3 text-sm font-mono",
+                            "flex-1 h-10 px-3 font-mono",
+                            modalValueFontClass,
                             "bg-white border border-slate-200 rounded-lg",
                             "text-slate-900 placeholder:text-slate-400",
                             "focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300"
@@ -511,7 +532,8 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger }) {
                     placeholder="例如: C:\Program Files\MyApp"
                     rows={4}
                     className={cn(
-                      "w-full px-3 py-2 text-sm font-mono",
+                      "w-full px-3 py-2 font-mono",
+                      modalValueFontClass,
                       "bg-white border border-slate-200 rounded-lg",
                       "text-slate-900 placeholder:text-slate-400",
                       "focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300",

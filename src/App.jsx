@@ -3,8 +3,12 @@ import EnvVarManager from './EnvVarManager'
 import SystemUserVariables from './SystemUserVariables'
 import SystemVariables from './SystemVariables'
 import TrashHistoryPage from './TrashHistoryPage'
+import SettingsPage from './SettingsPage'
 import { cn } from './utils/cn'
-import { History } from 'lucide-react'
+import { History, Settings } from 'lucide-react'
+import { useAppSettings } from './hooks/useAppSettings'
+import { clearTrashRecordsByType } from './hooks/useTrashHistory'
+import { LOG_POLICY } from './utils/logPolicy'
 
 export default function App() {
   const [enterAction, setEnterAction] = useState({})
@@ -12,9 +16,22 @@ export default function App() {
   const [isReady, setIsReady] = useState(false)
   const [activeTab, setActiveTab] = useState('groups') // 'groups' | 'user-vars' | 'system-vars'
   const [trashView, setTrashView] = useState(null) // 'groups' | 'user-vars' | null
+  const [showSettingsPage, setShowSettingsPage] = useState(false)
+  const [historyCleanupTick, setHistoryCleanupTick] = useState(0)
 
   // Refresh triggers for child components
   const [refreshTrigger, setRefreshTrigger] = useState(0)
+  const {
+    appSettings,
+    loadAppSettings,
+    updateAppSettings,
+    backups,
+    loadBackups,
+    createBackupSnapshot,
+    restoreBackupSnapshot,
+    deleteBackupSnapshot,
+    importBackupSnapshot,
+  } = useAppSettings()
 
   useEffect(() => {
     // 检查utools是否可用
@@ -34,6 +51,33 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    loadAppSettings()
+    loadBackups()
+  }, [loadAppSettings, loadBackups])
+
+  useEffect(() => {
+    if (route !== 'envvar') return
+
+    const cleanupOptions = {
+      enabled: appSettings?.history?.autoCleanupEnabled,
+      days: appSettings?.history?.autoCleanupDays,
+      maxRecords: LOG_POLICY.maxTrashRecordsPerType,
+    }
+
+    const runAutoCleanup = () => {
+      const deletedGroups = clearTrashRecordsByType('groups', cleanupOptions)
+      const deletedUserVars = clearTrashRecordsByType('user-vars', cleanupOptions)
+      if (deletedGroups + deletedUserVars > 0) {
+        setHistoryCleanupTick(prev => prev + 1)
+      }
+    }
+
+    runAutoCleanup()
+    const timerId = setInterval(runAutoCleanup, LOG_POLICY.autoCleanupIntervalMs)
+    return () => clearInterval(timerId)
+  }, [route, appSettings?.history?.autoCleanupEnabled, appSettings?.history?.autoCleanupDays])
+
   const openTrashView = useCallback((tabType) => {
     setTrashView(tabType)
   }, [])
@@ -41,6 +85,18 @@ export default function App() {
   const closeTrashView = useCallback(() => {
     setTrashView(null)
     // Trigger refresh in child components after restore
+    setRefreshTrigger(prev => prev + 1)
+  }, [])
+
+  const openSettingsPage = useCallback(() => {
+    setShowSettingsPage(true)
+  }, [])
+
+  const closeSettingsPage = useCallback(() => {
+    setShowSettingsPage(false)
+  }, [])
+
+  const handleSettingsDataChanged = useCallback(() => {
     setRefreshTrigger(prev => prev + 1)
   }, [])
 
@@ -137,6 +193,26 @@ export default function App() {
           tabType={trashView}
           onBack={closeTrashView}
           onRestore={handleRestore}
+          appSettings={appSettings}
+          notificationSettings={appSettings.notifications}
+          cleanupTick={historyCleanupTick}
+        />
+      )
+    }
+
+    if (showSettingsPage) {
+      return (
+        <SettingsPage
+          onBack={closeSettingsPage}
+          appSettings={appSettings}
+          onUpdateAppSettings={updateAppSettings}
+          backups={backups}
+          onLoadBackups={loadBackups}
+          onCreateBackup={createBackupSnapshot}
+          onRestoreBackup={restoreBackupSnapshot}
+          onDeleteBackup={deleteBackupSnapshot}
+          onImportBackup={importBackupSnapshot}
+          onDataChanged={handleSettingsDataChanged}
         />
       )
     }
@@ -157,7 +233,7 @@ export default function App() {
                       : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                   )}
                 >
-                  自定义变量组
+                  自定义用户变量
                 </button>
 
                 <button
@@ -187,16 +263,28 @@ export default function App() {
 
               {/* History Button - only for groups and user-vars tabs */}
               {(activeTab === 'groups' || activeTab === 'user-vars') && (
-                <button
-                  onClick={() => openTrashView(activeTab)}
-                  className={cn(
-                    "w-9 h-9 rounded-lg flex items-center justify-center",
-                    "text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                  )}
-                  title="操作历史"
-                >
-                  <History className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => openTrashView(activeTab)}
+                    className={cn(
+                      "w-9 h-9 rounded-lg flex items-center justify-center",
+                      "text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                    )}
+                    title="操作历史"
+                  >
+                    <History className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={openSettingsPage}
+                    className={cn(
+                      "w-9 h-9 rounded-lg flex items-center justify-center",
+                      "text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                    )}
+                    title="设置中心"
+                  >
+                    <Settings className="w-5 h-5" />
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -209,15 +297,25 @@ export default function App() {
               enterAction={enterAction}
               onOpenTrash={() => openTrashView('groups')}
               refreshTrigger={refreshTrigger}
+              fontSettings={appSettings.font}
+              notificationSettings={appSettings.notifications}
             />
           )}
           {activeTab === 'user-vars' && (
             <SystemUserVariables
               onOpenTrash={() => openTrashView('user-vars')}
               refreshTrigger={refreshTrigger}
+              fontSettings={appSettings.font}
+              notificationSettings={appSettings.notifications}
             />
           )}
-          {activeTab === 'system-vars' && <SystemVariables />}
+          {activeTab === 'system-vars' && (
+            <SystemVariables
+              refreshTrigger={refreshTrigger}
+              fontSettings={appSettings.font}
+              notificationSettings={appSettings.notifications}
+            />
+          )}
         </div>
       </div>
     )
