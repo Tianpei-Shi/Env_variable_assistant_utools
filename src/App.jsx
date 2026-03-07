@@ -7,6 +7,7 @@ import SettingsPage from './SettingsPage'
 import { cn } from './utils/cn'
 import { History, Settings } from 'lucide-react'
 import { useAppSettings } from './hooks/useAppSettings'
+import { useTheme } from './hooks/useTheme'
 import { clearTrashRecordsByType } from './hooks/useTrashHistory'
 import { LOG_POLICY } from './utils/logPolicy'
 
@@ -14,12 +15,11 @@ export default function App() {
   const [enterAction, setEnterAction] = useState({})
   const [route, setRoute] = useState('')
   const [isReady, setIsReady] = useState(false)
-  const [activeTab, setActiveTab] = useState('groups') // 'groups' | 'user-vars' | 'system-vars'
-  const [trashView, setTrashView] = useState(null) // 'groups' | 'user-vars' | null
+  const [activeTab, setActiveTab] = useState('groups')
+  const [trashView, setTrashView] = useState(null)
   const [showSettingsPage, setShowSettingsPage] = useState(false)
   const [historyCleanupTick, setHistoryCleanupTick] = useState(0)
 
-  // Refresh triggers for child components
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const {
     appSettings,
@@ -33,19 +33,19 @@ export default function App() {
     importBackupSnapshot,
   } = useAppSettings()
 
+  useTheme(appSettings?.theme?.mode)
+
   useEffect(() => {
-    // 检查utools是否可用
     if (window.utools) {
       window.utools.onPluginEnter((action) => {
         setRoute(action.code)
         setEnterAction(action)
         setIsReady(true)
       })
-      window.utools.onPluginOut((isKill) => {
+      window.utools.onPluginOut(() => {
         setRoute('')
       })
     } else {
-      // 开发环境下直接显示组件
       setRoute('envvar')
       setIsReady(true)
     }
@@ -68,7 +68,8 @@ export default function App() {
     const runAutoCleanup = () => {
       const deletedGroups = clearTrashRecordsByType('groups', cleanupOptions)
       const deletedUserVars = clearTrashRecordsByType('user-vars', cleanupOptions)
-      if (deletedGroups + deletedUserVars > 0) {
+      const deletedSystemVars = clearTrashRecordsByType('system-vars', cleanupOptions)
+      if (deletedGroups + deletedUserVars + deletedSystemVars > 0) {
         setHistoryCleanupTick(prev => prev + 1)
       }
     }
@@ -84,7 +85,6 @@ export default function App() {
 
   const closeTrashView = useCallback(() => {
     setTrashView(null)
-    // Trigger refresh in child components after restore
     setRefreshTrigger(prev => prev + 1)
   }, [])
 
@@ -100,46 +100,39 @@ export default function App() {
     setRefreshTrigger(prev => prev + 1)
   }, [])
 
-  // Handle restore from trash - this will be passed to TrashHistoryPage
   const handleRestore = useCallback(async (record) => {
     try {
-      const prefix = record.tabType === 'groups' ? 'user-group-' : 'system-user-var-'
+      const isSystemScope = record.tabType === 'system-vars'
+      const dbPrefix = record.tabType === 'groups' ? 'user-group-'
+        : record.tabType === 'system-vars' ? 'system-var-'
+        : 'system-user-var-'
 
       if (record.action === 'delete') {
-        // Restore deleted item
-        if (window.utools && window.utools.db) {
-          const data = record.data
-          if (record.tabType === 'groups') {
-            // Restore group
+        if (record.tabType === 'groups') {
+          if (window.utools?.db) {
             const groupId = record.data.id || `group-${Date.now()}`
-            const existing = utools.db.get(`${prefix}${groupId}`)
-            // 移除不需要保存到 data 中的字段
-            const groupDataToSave = { ...data }
+            const existing = utools.db.get(`${dbPrefix}${groupId}`)
+            const groupDataToSave = { ...record.data }
             delete groupDataToSave.id
             delete groupDataToSave._rev
-
             utools.db.put({
-              _id: `${prefix}${groupId}`,
+              _id: `${dbPrefix}${groupId}`,
               _rev: existing?._rev,
-              data: {
-                ...groupDataToSave,
-                isActive: false, // Always restore as inactive
-                updatedAt: new Date().toISOString(),
-              }
+              data: { ...groupDataToSave, isActive: false, updatedAt: new Date().toISOString() }
             })
-          } else {
-            // Restore user variable
-            if (window.services && window.services.setEnvironmentVariable) {
-              await window.services.setEnvironmentVariable(record.name, record.data.value, false)
-              await window.services.refreshEnvironment()
-            }
-            const existingVar = utools.db.get(`${prefix}${record.name}`)
+          }
+        } else {
+          if (window.services?.setEnvironmentVariable) {
+            await window.services.setEnvironmentVariable(record.name, record.data.value, isSystemScope)
+            await window.services.refreshEnvironment()
+          }
+          if (window.utools?.db) {
+            const existingVar = utools.db.get(`${dbPrefix}${record.name}`)
             utools.db.put({
-              _id: `${prefix}${record.name}`,
+              _id: `${dbPrefix}${record.name}`,
               _rev: existingVar?._rev,
               data: {
-                name: record.name,
-                value: record.data.value,
+                name: record.name, value: record.data.value,
                 isSystemOriginal: false,
                 createdAt: existingVar?.data?.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -148,28 +141,49 @@ export default function App() {
           }
         }
       } else if (record.action === 'edit' && record.originalData) {
-        // Restore to original value before edit
         if (record.tabType === 'groups') {
           const groupId = record.data.id
-          if (window.utools && window.utools.db && groupId) {
-            const existing = utools.db.get(`${prefix}${groupId}`)
+          if (window.utools?.db && groupId) {
+            const existing = utools.db.get(`${dbPrefix}${groupId}`)
             if (existing) {
               utools.db.put({
-                _id: existing._id,
-                _rev: existing._rev,
-                data: {
-                  ...record.originalData,
-                  updatedAt: new Date().toISOString(),
-                }
+                _id: existing._id, _rev: existing._rev,
+                data: { ...record.originalData, updatedAt: new Date().toISOString() }
               })
             }
           }
         } else {
-          // Restore user variable to original value
-          if (window.services && window.services.setEnvironmentVariable) {
+          if (window.services?.setEnvironmentVariable) {
             const originalValue = record.originalData.value || record.originalData
-            await window.services.setEnvironmentVariable(record.name, originalValue, false)
+            await window.services.setEnvironmentVariable(record.name, originalValue, isSystemScope)
             await window.services.refreshEnvironment()
+          }
+        }
+      } else if (record.action === 'create') {
+        if (record.tabType === 'groups') {
+          const groupId = record.data?.id
+          if (window.utools?.db && groupId) {
+            const existing = utools.db.get(`user-group-${groupId}`)
+            if (existing) {
+              if (existing.data?.isActive && window.services?.removeEnvironmentVariable) {
+                for (const v of existing.data.variables || []) {
+                  if (v.name) { try { await window.services.removeEnvironmentVariable(v.name) } catch {} }
+                }
+                try { await window.services.refreshEnvironment() } catch {}
+              }
+              utools.db.remove(existing)
+            }
+          }
+        } else {
+          if (window.services?.removeEnvironmentVariable) {
+            try {
+              await window.services.removeEnvironmentVariable(record.name, isSystemScope)
+              await window.services.refreshEnvironment()
+            } catch {}
+          }
+          if (window.utools?.db) {
+            const doc = utools.db.get(`${dbPrefix}${record.name}`)
+            if (doc) utools.db.remove(doc)
           }
         }
       }
@@ -182,11 +196,14 @@ export default function App() {
   }, [])
 
   if (!isReady) {
-    return <div style={{ padding: '20px', textAlign: 'center' }}>正在加载...</div>
+    return (
+      <div className="flex items-center justify-center h-screen bg-zinc-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400">
+        正在加载...
+      </div>
+    )
   }
 
   if (route === 'envvar') {
-    // Show trash history page if active
     if (trashView) {
       return (
         <TrashHistoryPage
@@ -218,19 +235,18 @@ export default function App() {
     }
 
     return (
-      <div className="min-h-screen bg-zinc-50">
-        {/* Tab Navigation */}
-        <div className="sticky top-0 z-40 bg-white border-b border-slate-200">
+      <div className="min-h-screen bg-zinc-50 dark:bg-slate-900">
+        <div className="sticky top-0 z-40 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
           <div className="max-w-7xl mx-auto px-6">
-            <div className="flex items-center justify-between py-3">
-              <div className="flex items-center gap-1">
+            <div className="flex items-center justify-between py-3 gap-3">
+              <div className="flex items-center gap-1 shrink-0">
                 <button
                   onClick={() => setActiveTab('groups')}
                   className={cn(
                     "px-4 py-2 text-sm font-medium rounded-lg transition-all",
                     activeTab === 'groups'
-                      ? "bg-slate-900 text-white"
-                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-100"
                   )}
                 >
                   自定义用户变量
@@ -241,8 +257,8 @@ export default function App() {
                   className={cn(
                     "px-4 py-2 text-sm font-medium rounded-lg transition-all",
                     activeTab === 'user-vars'
-                      ? "bg-slate-900 text-white"
-                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-100"
                   )}
                 >
                   用户变量
@@ -253,44 +269,42 @@ export default function App() {
                   className={cn(
                     "px-4 py-2 text-sm font-medium rounded-lg transition-all",
                     activeTab === 'system-vars'
-                      ? "bg-slate-900 text-white"
-                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-100"
                   )}
                 >
                   系统变量
                 </button>
               </div>
 
-              {/* History Button - only for groups and user-vars tabs */}
-              {(activeTab === 'groups' || activeTab === 'user-vars') && (
-                <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 shrink-0">
+                {(activeTab === 'groups' || activeTab === 'user-vars' || activeTab === 'system-vars') && (
                   <button
                     onClick={() => openTrashView(activeTab)}
                     className={cn(
                       "w-9 h-9 rounded-lg flex items-center justify-center",
-                      "text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                      "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                     )}
                     title="操作历史"
                   >
                     <History className="w-5 h-5" />
                   </button>
-                  <button
-                    onClick={openSettingsPage}
-                    className={cn(
-                      "w-9 h-9 rounded-lg flex items-center justify-center",
-                      "text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                    )}
-                    title="设置中心"
-                  >
-                    <Settings className="w-5 h-5" />
-                  </button>
-                </div>
-              )}
+                )}
+                <button
+                  onClick={openSettingsPage}
+                  className={cn(
+                    "w-9 h-9 rounded-lg flex items-center justify-center",
+                    "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                  )}
+                  title="设置中心"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Tab Content */}
         <div className="max-w-7xl mx-auto">
           {activeTab === 'groups' && (
             <EnvVarManager
@@ -311,6 +325,7 @@ export default function App() {
           )}
           {activeTab === 'system-vars' && (
             <SystemVariables
+              onOpenTrash={() => openTrashView('system-vars')}
               refreshTrigger={refreshTrigger}
               fontSettings={appSettings.font}
               notificationSettings={appSettings.notifications}
@@ -321,5 +336,9 @@ export default function App() {
     )
   }
 
-  return <div style={{ padding: '20px', textAlign: 'center' }}>请在utools中使用此插件</div>
+  return (
+    <div className="flex items-center justify-center h-screen bg-zinc-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400">
+      请在utools中使用此插件
+    </div>
+  )
 }

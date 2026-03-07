@@ -11,9 +11,13 @@
   body {
     @apply bg-zinc-50 text-slate-900;
   }
+
+  .dark body,
+  html.dark body {
+    @apply bg-slate-900 text-slate-50;
+  }
 }
 
-/* Modern minimalist scrollbar */
 ::-webkit-scrollbar {
   @apply w-1.5 h-1.5;
 }
@@ -30,17 +34,10 @@
   @apply bg-slate-400;
 }
 
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  body {
-    @apply bg-slate-900 text-slate-50;
-  }
+.dark ::-webkit-scrollbar-thumb {
+  @apply bg-slate-700;
+}
 
-  ::-webkit-scrollbar-thumb {
-    @apply bg-slate-700;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-slate-600;
-  }
+.dark ::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-600;
 }

@@ -19,6 +19,9 @@ const DEFAULT_SETTINGS = {
     modalKeySize: 2,
     modalValueSize: 2,
   },
+  theme: {
+    mode: 'system',
+  },
   notifications: {
     desktopEnabled: false,
     inAppEnabled: true,
@@ -35,8 +38,11 @@ function sortByCreatedAtDesc(list = []) {
   return [...list].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
 }
 
+const ALLOWED_THEME_MODES = new Set(['system', 'light', 'dark'])
+
 function normalizeSettings(input = {}) {
   const font = input.font || {}
+  const theme = input.theme || {}
   const notifications = input.notifications || {}
   const history = input.history || {}
   const autoCleanupDays = Number(history.autoCleanupDays)
@@ -47,6 +53,9 @@ function normalizeSettings(input = {}) {
       displayValueSize: clampFontLevel(font.displayValueSize),
       modalKeySize: clampFontLevel(font.modalKeySize),
       modalValueSize: clampFontLevel(font.modalValueSize),
+    },
+    theme: {
+      mode: ALLOWED_THEME_MODES.has(theme.mode) ? theme.mode : 'system',
     },
     notifications: {
       desktopEnabled: Boolean(notifications.desktopEnabled),
@@ -66,6 +75,10 @@ function deepMergeSettings(prev, next) {
     font: {
       ...(prev?.font || {}),
       ...(next?.font || {}),
+    },
+    theme: {
+      ...(prev?.theme || {}),
+      ...(next?.theme || {}),
     },
     notifications: {
       ...(prev?.notifications || {}),
