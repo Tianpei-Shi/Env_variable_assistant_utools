@@ -5,7 +5,7 @@ import { LOG_POLICY } from '../utils/logPolicy'
 const APP_SETTINGS_KEY = 'app-settings'
 const BACKUP_PREFIX = 'app-backup-'
 const LOCAL_BACKUPS_KEY = 'app-backups'
-const USER_DOC_PREFIXES = ['user-group-', 'system-user-var-', 'trash-history-groups-', 'trash-history-user-vars-']
+const USER_DOC_PREFIXES = ['user-group-', 'system-user-var-', 'trash-history-groups-', 'trash-history-user-vars-', 'env-template-']
 const SYSTEM_SNAPSHOT_KEY = '__SYSTEM_ENV_SNAPSHOT__'
 const USER_SNAPSHOT_KEY = '__USER_ENV_SNAPSHOT__'
 const ALLOWED_BACKUP_SCOPES = new Set(['user', 'system', 'all'])

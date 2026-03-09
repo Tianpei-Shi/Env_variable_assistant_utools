@@ -3,7 +3,7 @@ import {
   Plus, Search, Settings, Eye, EyeOff, Copy, Trash2,
   Edit2, Check, X, Power, PowerOff, RefreshCw,
   ChevronDown, ChevronUp, AlertCircle, Loader2, CheckSquare, Square,
-  Download, Upload, ArrowUpDown
+  Download, Upload, ArrowUpDown, FileText, Link, Unlink
 } from 'lucide-react'
 import { cn } from './utils/cn'
 import { useTrashHistory } from './hooks/useTrashHistory'
@@ -32,6 +32,14 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
   const [sortMode, setSortMode] = useState('name')
   const [showConflictModal, setShowConflictModal] = useState(false)
   const [conflictData, setConflictData] = useState(null)
+
+  const [templates, setTemplates] = useState([])
+  const [showTemplateManager, setShowTemplateManager] = useState(false)
+  const [showTemplateModal, setShowTemplateModal] = useState(false)
+  const [templateModalMode, setTemplateModalMode] = useState('create')
+  const [editingTemplate, setEditingTemplate] = useState(null)
+  const [templateName, setTemplateName] = useState('')
+  const [templateKeys, setTemplateKeys] = useState([''])
 
   const displayKeyFontClass = getFontClass(fontSettings?.displayKeySize, 2)
   const displayValueFontClass = getFontClass(fontSettings?.displayValueSize, 2)
@@ -162,6 +170,33 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     } finally { setIsLoading(false) }
   }
 
+  const deactivateLinkedGroups = async (excludeGroupId) => {
+    const linkedActiveGroups = envGroups.filter(g => g.isLinked && g.isActive && g.id !== excludeGroupId)
+    if (linkedActiveGroups.length === 0) return []
+    const prefix = 'user-group-'
+    const deactivatedNames = []
+    for (const g of linkedActiveGroups) {
+      const groupData = { ...g, isActive: false, updatedAt: new Date().toISOString() }
+      delete groupData.id; delete groupData._rev
+      if (window.utools?.db) {
+        const existingDoc = utools.db.get(`${prefix}${g.id}`)
+        utools.db.put({ _id: `${prefix}${g.id}`, _rev: existingDoc?._rev, data: groupData })
+      }
+      if (window.services?.removeEnvironmentVariable) {
+        for (const variable of g.variables) {
+          if (!variable.name) continue
+          try { await window.services.removeEnvironmentVariable(variable.name) } catch {}
+        }
+      }
+      deactivatedNames.push(g.name)
+    }
+    setEnvGroups(prev => prev.map(g => {
+      if (g.isLinked && g.isActive && g.id !== excludeGroupId) return { ...g, isActive: false, updatedAt: new Date().toISOString() }
+      return g
+    }))
+    return deactivatedNames
+  }
+
   const toggleGroupActive = async (groupId, currentActive) => {
     try {
       const group = envGroups.find(g => g.id === groupId)
@@ -186,7 +221,16 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
         }
       }
 
-      await executeToggleGroupActive(groupId, currentActive)
+      if (!currentActive && group.isLinked) {
+        const deactivatedNames = await deactivateLinkedGroups(groupId)
+        await executeToggleGroupActive(groupId, currentActive)
+        if (deactivatedNames.length > 0) {
+          showToast(`已自动停用 ${deactivatedNames.join('、')}，激活了 ${group.name}`, 'success')
+          return
+        }
+      } else {
+        await executeToggleGroupActive(groupId, currentActive)
+      }
     } catch (error) {
       showToast(`操作失败: ${error.message}`, 'error')
     }
@@ -234,21 +278,105 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
   const handleConflictOverrideAll = async () => {
     if (!conflictData) return
     setShowConflictModal(false)
-    await executeToggleGroupActive(conflictData.groupId, false)
+    const group = conflictData.group
+    if (group.isLinked) {
+      const deactivatedNames = await deactivateLinkedGroups(conflictData.groupId)
+      await executeToggleGroupActive(conflictData.groupId, false)
+      if (deactivatedNames.length > 0) {
+        showToast(`已自动停用 ${deactivatedNames.join('、')}，激活了 ${group.name}`, 'success')
+      }
+    } else {
+      await executeToggleGroupActive(conflictData.groupId, false)
+    }
     setConflictData(null)
   }
 
   const handleConflictSkip = async () => {
     if (!conflictData) return
     setShowConflictModal(false)
+    const group = conflictData.group
     const skipNames = new Set(conflictData.conflicts.map(c => c.name))
-    await executeToggleGroupActive(conflictData.groupId, false, skipNames)
+    if (group.isLinked) {
+      const deactivatedNames = await deactivateLinkedGroups(conflictData.groupId)
+      await executeToggleGroupActive(conflictData.groupId, false, skipNames)
+      if (deactivatedNames.length > 0) {
+        showToast(`已自动停用 ${deactivatedNames.join('、')}，激活了 ${group.name}`, 'success')
+      }
+    } else {
+      await executeToggleGroupActive(conflictData.groupId, false, skipNames)
+    }
     setConflictData(null)
   }
 
   const handleConflictCancel = () => {
     setShowConflictModal(false)
     setConflictData(null)
+  }
+
+  const TEMPLATE_PREFIX = 'env-template-'
+
+  const loadTemplates = () => {
+    try {
+      if (window.utools?.db) {
+        const allDocs = utools.db.allDocs(TEMPLATE_PREFIX)
+        const list = allDocs
+          .filter(doc => doc.data && doc.data.name)
+          .map(doc => ({ ...doc.data, id: doc._id.replace(TEMPLATE_PREFIX, ''), _rev: doc._rev }))
+        setTemplates(list)
+      }
+    } catch {}
+  }
+
+  const openTemplateCreateModal = () => {
+    setTemplateModalMode('create'); setEditingTemplate(null); setTemplateName(''); setTemplateKeys(['']); setShowTemplateModal(true)
+  }
+
+  const openTemplateEditModal = (tpl) => {
+    setTemplateModalMode('edit'); setEditingTemplate(tpl); setTemplateName(tpl.name); setTemplateKeys([...tpl.keys]); setShowTemplateModal(true)
+  }
+
+  const closeTemplateModal = () => {
+    setShowTemplateModal(false); setTemplateModalMode('create'); setEditingTemplate(null); setTemplateName(''); setTemplateKeys([''])
+  }
+
+  const saveTemplate = () => {
+    if (!templateName.trim()) { showToast('请输入模板名称', 'error'); return }
+    const validKeys = templateKeys.filter(k => k.trim())
+    if (validKeys.length === 0) { showToast('请至少添加一个变量名', 'error'); return }
+    try {
+      const tplId = templateModalMode === 'edit' && editingTemplate ? editingTemplate.id : `tpl-${Date.now()}`
+      const tplData = {
+        name: templateName.trim(), keys: validKeys,
+        createdAt: templateModalMode === 'edit' && editingTemplate ? editingTemplate.createdAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+      if (window.utools?.db) {
+        const existingDoc = utools.db.get(`${TEMPLATE_PREFIX}${tplId}`)
+        utools.db.put({ _id: `${TEMPLATE_PREFIX}${tplId}`, _rev: existingDoc?._rev, data: tplData })
+      }
+      loadTemplates()
+      closeTemplateModal()
+      showToast(`模板 "${templateName}" ${templateModalMode === 'edit' ? '更新' : '创建'}成功`, 'success')
+    } catch (error) { showToast(`保存模板失败: ${error.message}`, 'error') }
+  }
+
+  const deleteTemplate = (tpl) => {
+    try {
+      if (window.utools?.db) utools.db.remove(`${TEMPLATE_PREFIX}${tpl.id}`)
+      loadTemplates()
+      showToast(`模板 "${tpl.name}" 已删除`, 'success')
+    } catch (error) { showToast(`删除模板失败: ${error.message}`, 'error') }
+  }
+
+  const applyTemplateToGroup = (tplId) => {
+    const tpl = templates.find(t => t.id === tplId)
+    if (!tpl) return
+    const existingNames = new Set(groupVariables.filter(v => v.name.trim()).map(v => v.name.trim()))
+    const newVars = tpl.keys.filter(k => !existingNames.has(k)).map(k => ({ name: k, value: '' }))
+    if (newVars.length === 0) { showToast('模板中的变量名已全部存在', 'info'); return }
+    const cleanedVars = groupVariables.filter(v => v.name.trim() || v.value.trim())
+    setGroupVariables([...cleanedVars, ...newVars])
+    showToast(`已导入 ${newVars.length} 个变量名`, 'success')
   }
 
   const openCreateModal = () => {
@@ -356,6 +484,21 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     } catch (error) { showToast(`删除失败: ${error.message}`, 'error') }
   }
 
+  const toggleGroupLinked = (groupId) => {
+    const group = envGroups.find(g => g.id === groupId)
+    if (!group) return
+    const prefix = 'user-group-'
+    const newLinked = !group.isLinked
+    const groupData = { ...group, isLinked: newLinked, updatedAt: new Date().toISOString() }
+    delete groupData.id; delete groupData._rev
+    if (window.utools?.db) {
+      const existingDoc = utools.db.get(`${prefix}${groupId}`)
+      utools.db.put({ _id: `${prefix}${groupId}`, _rev: existingDoc?._rev, data: groupData })
+    }
+    setEnvGroups(prev => prev.map(g => g.id === groupId ? { ...g, isLinked: newLinked, updatedAt: new Date().toISOString() } : g))
+    showToast(`环境变量组 "${group.name}" 已${newLinked ? '加入' : '移出'}互斥锁链`, 'success')
+  }
+
   const handleExportGroups = () => {
     const toExport = selectedGroups.size > 0
       ? envGroups.filter(g => selectedGroups.has(g.id))
@@ -367,7 +510,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
       filters: [{ name: 'JSON 文件', extensions: ['json'] }],
     })
     if (!savePath) return
-    const payload = { type: 'env-groups-export', version: 1, exportedAt: new Date().toISOString(), groups: toExport.map(g => ({ name: g.name, description: g.description, variables: g.variables, createdAt: g.createdAt })) }
+    const payload = { type: 'env-groups-export', version: 1, exportedAt: new Date().toISOString(), groups: toExport.map(g => ({ name: g.name, description: g.description, variables: g.variables, isLinked: g.isLinked || false, createdAt: g.createdAt })) }
     try {
       window.services.writeFileText(savePath, JSON.stringify(payload, null, 2))
       showToast(`已导出 ${toExport.length} 个环境变量组`, 'success')
@@ -394,7 +537,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
         const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
         const groupData = {
           name: group.name, description: group.description || '', variables: group.variables,
-          isActive: false, isSystemVariable: false,
+          isActive: false, isLinked: group.isLinked || false, isSystemVariable: false,
           createdAt: group.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString()
         }
         if (window.utools?.db) { utools.db.put({ _id: `${prefix}${groupId}`, data: groupData }) }
@@ -419,7 +562,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     return new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
   })
 
-  useEffect(() => { loadEnvironmentGroups() }, [])
+  useEffect(() => { loadEnvironmentGroups(); loadTemplates() }, [])
   useEffect(() => { if (refreshTrigger > 0) loadEnvironmentGroups() }, [refreshTrigger])
 
   const formatDate = (dateStr) => {
@@ -453,29 +596,31 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
               {selectedGroups.size > 0 && <span className="text-blue-600 dark:text-blue-400 font-medium"> · 已选择 {selectedGroups.size} 个</span>}
             </p>
           </div>
-          {isDetectingStates && (
-            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-              <Loader2 className="w-4 h-4 animate-spin" /> 同步中...
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500" />
+              <input
+                type="text"
+                placeholder="搜索变量组..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className={cn(
+                  "h-10 pl-9 pr-3 text-sm rounded-lg w-72",
+                  "bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700",
+                  "text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500",
+                  "focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500"
+                )}
+              />
             </div>
-          )}
+            {isDetectingStates && (
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <Loader2 className="w-4 h-4 animate-spin" /> 同步中...
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3 mb-6 flex-wrap">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500" />
-            <input
-              type="text"
-              placeholder="搜索变量组..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className={cn(
-                "h-10 pl-9 pr-3 text-sm rounded-lg w-48",
-                "bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700",
-                "text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500",
-                "focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500"
-              )}
-            />
-          </div>
           <button onClick={() => setSortMode(sortMode === 'name' ? 'time' : 'name')}
             className={cn("flex items-center gap-2 h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors")}>
             <ArrowUpDown className="w-4 h-4" /> {sortMode === 'name' ? '按名称' : '按时间'}
@@ -505,6 +650,9 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
               </button>
               <button onClick={handleImportGroups} className="flex items-center gap-2 h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
                 <Upload className="w-4 h-4" /> 导入
+              </button>
+              <button onClick={() => { loadTemplates(); setShowTemplateManager(true) }} className="flex items-center gap-2 h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                <FileText className="w-4 h-4" /> 模板管理
               </button>
               <button onClick={openCreateModal} className="flex items-center gap-2 h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors">
                 <Plus className="w-4 h-4" /> 创建环境变量组
@@ -568,7 +716,9 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <h3 className="text-base font-medium text-slate-900 dark:text-slate-100 truncate">{group.name}</h3>
+                            {group.isLinked && <Link className="w-4 h-4 text-violet-500 dark:text-violet-400 shrink-0" />}
                             <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium", group.isActive ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400" : "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400")}>{group.isActive ? '已激活' : '未激活'}</span>
+                            {group.isLinked && <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400">互斥</span>}
                           </div>
                           <div className="flex items-center gap-2 mt-0.5">
                             {group.description && <p className="text-sm text-slate-500 dark:text-slate-400 truncate">{group.description}</p>}
@@ -578,6 +728,9 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
                         <div className="text-sm text-slate-500 dark:text-slate-400 px-3 py-1 bg-slate-50 dark:bg-slate-700 rounded-lg">{group.variables.length} 个变量</div>
                       </div>
                       <div className="flex items-center gap-1 ml-4">
+                        <button onClick={() => toggleGroupLinked(group.id)} className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-colors", group.isLinked ? "text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 hover:bg-violet-100 dark:hover:bg-violet-900/50" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700")} title={group.isLinked ? '移出互斥锁链' : '加入互斥锁链'}>
+                          {group.isLinked ? <Link className="w-4 h-4" /> : <Unlink className="w-4 h-4" />}
+                        </button>
                         <button onClick={() => openEditModal(group)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" title="编辑"><Edit2 className="w-4 h-4" /></button>
                         <button onClick={() => showDeleteConfirmation(group)} className="w-8 h-8 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" title="删除"><Trash2 className="w-4 h-4" /></button>
                         <button onClick={() => toggleGroupExpansion(group.id)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" title={isExpanded ? '收起' : '展开'}>
@@ -629,8 +782,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
 
       {/* Create/Edit Modal */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-2xl bg-white dark:bg-slate-800 rounded-xl shadow-xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={closeModal}>
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-800 rounded-xl shadow-xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{modalMode === 'create' ? '创建环境变量组' : '编辑环境变量组'}</h2>
               <button onClick={closeModal} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"><X className="w-5 h-5" /></button>
@@ -649,7 +802,19 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">环境变量 <span className="text-red-500">*</span></label>
-                  <button onClick={addVariableToGroup} className="flex items-center gap-1 h-8 px-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"><Plus className="w-4 h-4" /> 添加变量</button>
+                  <div className="flex items-center gap-2">
+                    {templates.length > 0 && (
+                      <select
+                        defaultValue=""
+                        onChange={(e) => { if (e.target.value) { applyTemplateToGroup(e.target.value); e.target.value = '' } }}
+                        className="h-8 px-2 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20"
+                      >
+                        <option value="">从模板导入...</option>
+                        {templates.map(tpl => <option key={tpl.id} value={tpl.id}>{tpl.name} ({tpl.keys.length} 个变量)</option>)}
+                      </select>
+                    )}
+                    <button onClick={addVariableToGroup} className="flex items-center gap-1 h-8 px-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"><Plus className="w-4 h-4" /> 添加变量</button>
+                  </div>
                 </div>
                 <div className="space-y-3">
                   {groupVariables.map((variable, index) => (
@@ -678,8 +843,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
 
       {/* Delete Modal */}
       {showDeleteModal && groupToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={closeDeleteModal}>
+          <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl shadow-xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 flex items-center justify-center"><AlertCircle className="w-5 h-5" /></div>
@@ -717,8 +882,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
 
       {/* Batch Delete Modal */}
       {showBatchDeleteModal && selectedGroups.size > 0 && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={closeBatchDeleteModal}>
+          <div className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl shadow-xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 flex items-center justify-center"><AlertCircle className="w-5 h-5" /></div>
@@ -752,8 +917,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
 
       {/* Conflict Modal */}
       {showConflictModal && conflictData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={handleConflictCancel}>
+          <div className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl shadow-xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 flex items-center justify-center"><AlertCircle className="w-5 h-5" /></div>
@@ -779,6 +944,94 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
               <button onClick={handleConflictCancel} className="h-10 px-4 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600">取消</button>
               <button onClick={handleConflictSkip} className="h-10 px-4 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600">跳过冲突</button>
               <button onClick={handleConflictOverrideAll} className="h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200">全部覆盖</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template Manager Modal */}
+      {showTemplateManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => setShowTemplateManager(false)}>
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-800 rounded-xl shadow-xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">模板管理</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">预定义变量名模板，创建环境变量组时快速导入</p>
+              </div>
+              <button onClick={() => setShowTemplateManager(false)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {templates.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="w-14 h-14 bg-slate-100 dark:bg-slate-700 rounded-full flex items-center justify-center mb-4"><FileText className="w-7 h-7 text-slate-400" /></div>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">暂无模板，创建一个开始使用</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {templates.map(tpl => (
+                    <div key={tpl.id} className="bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{tpl.name}</h4>
+                        </div>
+                        <div className="flex items-center gap-1 ml-3">
+                          <button onClick={() => openTemplateEditModal(tpl)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors" title="编辑"><Edit2 className="w-4 h-4" /></button>
+                          <button onClick={() => deleteTemplate(tpl)} className="w-8 h-8 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" title="删除"><Trash2 className="w-4 h-4" /></button>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {tpl.keys.map((k, i) => (
+                          <span key={i} className="inline-flex items-center px-2 py-1 rounded text-xs font-mono bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300">{k}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200 dark:border-slate-700">
+              <button onClick={() => setShowTemplateManager(false)} className="h-10 px-4 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors">关闭</button>
+              <button onClick={openTemplateCreateModal} className="h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors flex items-center gap-2"><Plus className="w-4 h-4" /> 创建模板</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template Create/Edit Modal */}
+      {showTemplateModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={closeTemplateModal}>
+          <div className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl shadow-xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{templateModalMode === 'create' ? '创建模板' : '编辑模板'}</h2>
+              <button onClick={closeTemplateModal} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">模板名称 <span className="text-red-500">*</span></label>
+                <input type="text" value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="例如: Java 开发环境"
+                  className="w-full h-10 px-4 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg placeholder:text-slate-400 dark:placeholder:text-slate-500 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500" />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">变量名列表 <span className="text-red-500">*</span></label>
+                  <button onClick={() => setTemplateKeys([...templateKeys, ''])} className="flex items-center gap-1 h-8 px-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"><Plus className="w-4 h-4" /> 添加</button>
+                </div>
+                <div className="space-y-2">
+                  {templateKeys.map((key, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <input type="text" value={key} onChange={(e) => { const nk = [...templateKeys]; nk[index] = e.target.value; setTemplateKeys(nk) }} placeholder="变量名 (如: JAVA_HOME)"
+                        className="flex-1 h-10 px-4 font-mono text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg placeholder:text-slate-400 dark:placeholder:text-slate-500 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500" />
+                      {templateKeys.length > 1 && (
+                        <button onClick={() => setTemplateKeys(templateKeys.filter((_, i) => i !== index))} className="w-10 h-10 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" title="删除"><Trash2 className="w-4 h-4" /></button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200 dark:border-slate-700">
+              <button onClick={closeTemplateModal} className="h-10 px-4 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors">取消</button>
+              <button onClick={saveTemplate} className="h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors">{templateModalMode === 'create' ? '创建' : '保存'}</button>
             </div>
           </div>
         </div>

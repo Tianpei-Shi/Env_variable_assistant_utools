@@ -179,12 +179,11 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger, fontS
 
   return (
     <div className="p-6 pb-20">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-2">用户环境变量</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">管理 {getPlatformName()} 用户级环境变量 · {sortedVars.length} 个</p>
-      </div>
-
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-2">用户环境变量</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">管理 {getPlatformName()} 用户级环境变量 · {sortedVars.length} 个</p>
+        </div>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500" />
           <input
@@ -193,13 +192,16 @@ export default function SystemUserVariables({ onOpenTrash, refreshTrigger, fontS
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className={cn(
-              "h-10 pl-9 pr-3 text-sm rounded-lg w-48",
+              "h-10 pl-9 pr-3 text-sm rounded-lg w-72",
               "bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700",
               "text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500",
               "focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500"
             )}
           />
         </div>
+      </div>
+
+      <div className="flex items-center gap-3 mb-6">
         <button onClick={() => setSortMode(sortMode === 'name' ? 'time' : 'name')}
           className="flex items-center gap-2 h-10 px-4 text-sm font-medium rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
           <ArrowUpDown className="w-4 h-4" /> {sortMode === 'name' ? '按名称' : '按时间'}

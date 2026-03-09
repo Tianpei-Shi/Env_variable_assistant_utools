@@ -55,10 +55,21 @@ function mapFromDocs(docs, target) {
   return map
 }
 function sortEntries(map) { return Array.from(map.entries()).filter(([k]) => Boolean(k)).sort((a, b) => a[0].localeCompare(b[0], 'zh-Hans-CN')).map(([key, value]) => ({ key, value })) }
+function getTemplatesFromDocs(docs) {
+  const templates = []
+  ;(docs || []).forEach(doc => {
+    if (!doc?._id || !doc?.data) return
+    if (doc._id.startsWith('env-template-') && doc.data.name) {
+      templates.push({ name: doc.data.name, keys: doc.data.keys || [] })
+    }
+  })
+  return templates.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+}
 function getBackupPreviewData(backup) {
   const uS = mapFromSnapshot(backup?.envSnapshots?.user), sS = mapFromSnapshot(backup?.envSnapshots?.system)
   const uF = mapFromDocs(backup?.docs, 'user'), sF = mapFromDocs(backup?.docs, 'system')
-  return { userEntries: sortEntries(uS.size > 0 ? uS : uF), systemEntries: sortEntries(sS.size > 0 ? sS : sF) }
+  const templates = getTemplatesFromDocs(backup?.docs)
+  return { userEntries: sortEntries(uS.size > 0 ? uS : uF), systemEntries: sortEntries(sS.size > 0 ? sS : sF), templates }
 }
 
 function ToggleSwitch({ checked, onChange, ariaLabel }) {
@@ -482,6 +493,24 @@ export default function SettingsPage({ onBack, appSettings, onUpdateAppSettings,
                   </div>
                 </div>
               ))}
+              {(previewData?.templates?.length || 0) > 0 && (
+                <div className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700">
+                  <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-600 flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-slate-900 dark:text-slate-100">环境变量模板</h4>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{previewData.templates.length} 个</span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto p-3 space-y-2">
+                    {previewData.templates.map((tpl, i) => (
+                      <div key={i} className="p-2 bg-slate-50 dark:bg-slate-600 rounded-lg">
+                        <p className="text-xs font-medium text-slate-900 dark:text-slate-100 mb-1">{tpl.name}</p>
+                        <div className="flex flex-wrap gap-1">
+                          {tpl.keys.map((k, j) => <span key={j} className="px-1.5 py-0.5 text-[10px] font-mono bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-500 rounded text-slate-600 dark:text-slate-300">{k}</span>)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-end gap-2 p-5 border-t border-slate-200 dark:border-slate-700">
               <button onClick={() => setPreviewBackupId('')} className="h-10 px-4 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600">关闭</button>
