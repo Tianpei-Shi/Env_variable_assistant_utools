@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Plus, Search, Copy, Trash2, Edit2, X, AlertCircle, CheckCircle, Loader2, RefreshCw, ShieldAlert, ArrowUpDown } from 'lucide-react'
+import { Plus, Search, Copy, Trash2, Edit2, X, AlertCircle, CheckCircle, Loader2, RefreshCw, ShieldAlert, ArrowUpDown, ExternalLink } from 'lucide-react'
 import { cn } from './utils/cn'
 import { useTrashHistory } from './hooks/useTrashHistory'
 import { getFontClass } from './utils/fontLevel'
-import { getPlatformName, getPathSeparator, getExamplePath, getAdminHint, getValueLengthLimit } from './utils/platform'
+import { getPlatformName, getPathSeparator, getExamplePath, getAdminHint, getValueLengthLimit, isWindows } from './utils/platform'
 import SortablePathList from './components/SortablePathList'
 
 export default function SystemVariables({ onOpenTrash, refreshTrigger, fontSettings, notificationSettings }) {
@@ -162,10 +162,16 @@ export default function SystemVariables({ onOpenTrash, refreshTrigger, fontSetti
       {!isCheckingPermission && !canModifySystem && (
         <div className="mb-6 flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
           <ShieldAlert className="w-5 h-5 text-amber-700 dark:text-amber-400 mt-0.5 flex-shrink-0" />
-          <div className="text-sm text-amber-900 dark:text-amber-200">
+          <div className="flex-1 text-sm text-amber-900 dark:text-amber-200">
             <p className="font-medium mb-1">当前为只读模式</p>
-            <p className="text-amber-800 dark:text-amber-300">未检测到管理员权限。{getAdminHint()}后，再进行系统变量的增删改。</p>
+            <p className="text-amber-800 dark:text-amber-300">{getAdminHint()}后，再进行系统变量的增删改。{isWindows() && '或者直接打开系统环境变量设置进行修改。'}</p>
           </div>
+          {isWindows() && (
+            <button onClick={() => window.services?.openSystemEnvSettings()}
+              className="shrink-0 flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-lg bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:bg-amber-200 dark:hover:bg-amber-900/60 transition-colors">
+              <ExternalLink className="w-3.5 h-3.5" /> 打开系统设置
+            </button>
+          )}
         </div>
       )}
 
@@ -182,6 +188,12 @@ export default function SystemVariables({ onOpenTrash, refreshTrigger, fontSetti
           className={cn("flex items-center gap-2 h-10 px-4 text-sm font-medium rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors", isReadonly && "opacity-50 cursor-not-allowed")}>
           <Plus className="w-4 h-4" /> 新建变量
         </button>
+        {isWindows() && (
+          <button onClick={() => window.services?.openSystemEnvSettings()}
+            className="flex items-center gap-2 h-10 px-4 text-sm font-medium rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+            <ExternalLink className="w-4 h-4" /> 打开系统设置
+          </button>
+        )}
       </div>
 
       {(isLoading || isCheckingPermission) && (

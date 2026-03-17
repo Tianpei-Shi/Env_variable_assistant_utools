@@ -119,5 +119,9 @@ module.exports = {
 
   getValueLengthLimit () {
     return SETX_VALUE_LIMIT
+  },
+
+  openSystemEnvSettings () {
+    exec('rundll32 sysdm.cpl,EditEnvironmentVariables')
   }
 }

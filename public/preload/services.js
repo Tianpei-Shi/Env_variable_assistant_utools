@@ -55,6 +55,12 @@ window.services = {
     return handler.getValueLengthLimit()
   },
 
+  openSystemEnvSettings () {
+    if (handler.openSystemEnvSettings) {
+      handler.openSystemEnvSettings()
+    }
+  },
+
   readFileText (filePath) {
     return fs.readFileSync(filePath, 'utf8')
   },
