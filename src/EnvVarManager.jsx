@@ -6,6 +6,7 @@ import {
   Download, Upload, ArrowUpDown, FileText, Link, Unlink
 } from 'lucide-react'
 import { cn } from './utils/cn'
+import CustomSelect from './components/CustomSelect'
 import { useTrashHistory } from './hooks/useTrashHistory'
 import { getFontClass } from './utils/fontLevel'
 import { isWindows, getExamplePath } from './utils/platform'
@@ -27,6 +28,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
   const [groupName, setGroupName] = useState('')
   const [groupDescription, setGroupDescription] = useState('')
   const [groupVariables, setGroupVariables] = useState([{ name: '', value: '' }])
+  const [groupChainId, setGroupChainId] = useState(null)
   const [toast, setToast] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortMode, setSortMode] = useState('name')
@@ -40,6 +42,32 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
   const [editingTemplate, setEditingTemplate] = useState(null)
   const [templateName, setTemplateName] = useState('')
   const [templateKeys, setTemplateKeys] = useState([''])
+
+  const CHAIN_PREFIX = 'env-chain-'
+  const CHAIN_COLORS = [
+    { bg: 'bg-violet-100 dark:bg-violet-900/40', text: 'text-violet-700 dark:text-violet-400', border: 'border-violet-200 dark:border-violet-800', icon: 'text-violet-500 dark:text-violet-400', btnBg: 'bg-violet-50 dark:bg-violet-900/30 hover:bg-violet-100 dark:hover:bg-violet-900/50' },
+    { bg: 'bg-blue-100 dark:bg-blue-900/40', text: 'text-blue-700 dark:text-blue-400', border: 'border-blue-200 dark:border-blue-800', icon: 'text-blue-500 dark:text-blue-400', btnBg: 'bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50' },
+    { bg: 'bg-emerald-100 dark:bg-emerald-900/40', text: 'text-emerald-700 dark:text-emerald-400', border: 'border-emerald-200 dark:border-emerald-800', icon: 'text-emerald-500 dark:text-emerald-400', btnBg: 'bg-emerald-50 dark:bg-emerald-900/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/50' },
+    { bg: 'bg-amber-100 dark:bg-amber-900/40', text: 'text-amber-700 dark:text-amber-400', border: 'border-amber-200 dark:border-amber-800', icon: 'text-amber-500 dark:text-amber-400', btnBg: 'bg-amber-50 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-900/50' },
+    { bg: 'bg-rose-100 dark:bg-rose-900/40', text: 'text-rose-700 dark:text-rose-400', border: 'border-rose-200 dark:border-rose-800', icon: 'text-rose-500 dark:text-rose-400', btnBg: 'bg-rose-50 dark:bg-rose-900/30 hover:bg-rose-100 dark:hover:bg-rose-900/50' },
+    { bg: 'bg-cyan-100 dark:bg-cyan-900/40', text: 'text-cyan-700 dark:text-cyan-400', border: 'border-cyan-200 dark:border-cyan-800', icon: 'text-cyan-500 dark:text-cyan-400', btnBg: 'bg-cyan-50 dark:bg-cyan-900/30 hover:bg-cyan-100 dark:hover:bg-cyan-900/50' },
+  ]
+
+  const [chains, setChains] = useState([])
+  const [showChainManager, setShowChainManager] = useState(false)
+  const [showChainModal, setShowChainModal] = useState(false)
+  const [chainModalMode, setChainModalMode] = useState('create')
+  const [editingChain, setEditingChain] = useState(null)
+  const [chainName, setChainName] = useState('')
+  const [openChainDropdown, setOpenChainDropdown] = useState(null)
+  const [chainDropdownPos, setChainDropdownPos] = useState({ top: 0, right: 0 })
+  const [isCreatingChainFromGroupModal, setIsCreatingChainFromGroupModal] = useState(false)
+
+  const getChainColor = (chainId) => {
+    const idx = chains.findIndex(c => c.id === chainId)
+    return CHAIN_COLORS[idx >= 0 ? idx % CHAIN_COLORS.length : 0]
+  }
+  const getChainName = (chainId) => chains.find(c => c.id === chainId)?.name || '未知锁链'
 
   const displayKeyFontClass = getFontClass(fontSettings?.displayKeySize, 2)
   const displayValueFontClass = getFontClass(fontSettings?.displayValueSize, 2)
@@ -136,6 +164,33 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
         }]
       }
 
+      const legacyLinkedGroups = groups.filter(g => g.isLinked && !g.chainId)
+      if (legacyLinkedGroups.length > 0) {
+        let defaultChainId = null
+        if (window.utools?.db) {
+          const existingChains = utools.db.allDocs(CHAIN_PREFIX)
+          const defaultChain = existingChains.find(doc => doc.data?.name === '默认锁链')
+          if (defaultChain) {
+            defaultChainId = defaultChain._id.replace(CHAIN_PREFIX, '')
+          } else {
+            defaultChainId = `chain-legacy-${Date.now()}`
+            utools.db.put({ _id: `${CHAIN_PREFIX}${defaultChainId}`, data: { name: '默认锁链', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } })
+          }
+        }
+        if (defaultChainId) {
+          for (const g of legacyLinkedGroups) {
+            g.chainId = defaultChainId
+            delete g.isLinked
+            const groupDataToMigrate = { ...g }
+            delete groupDataToMigrate.id; delete groupDataToMigrate._rev
+            if (window.utools?.db) {
+              try { utools.db.put({ _id: `${prefix}${g.id}`, _rev: g._rev, data: groupDataToMigrate }) } catch {}
+            }
+          }
+          loadChains()
+        }
+      }
+
       if (isServiceAvailable() && groups.length > 0) {
         setIsDetectingStates(true)
         const updatedGroups = []
@@ -170,12 +225,13 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     } finally { setIsLoading(false) }
   }
 
-  const deactivateLinkedGroups = async (excludeGroupId) => {
-    const linkedActiveGroups = envGroups.filter(g => g.isLinked && g.isActive && g.id !== excludeGroupId)
-    if (linkedActiveGroups.length === 0) return []
+  const deactivateChainGroups = async (chainId, excludeGroupId) => {
+    if (!chainId) return []
+    const chainActiveGroups = envGroups.filter(g => g.chainId === chainId && g.isActive && g.id !== excludeGroupId)
+    if (chainActiveGroups.length === 0) return []
     const prefix = 'user-group-'
     const deactivatedNames = []
-    for (const g of linkedActiveGroups) {
+    for (const g of chainActiveGroups) {
       const groupData = { ...g, isActive: false, updatedAt: new Date().toISOString() }
       delete groupData.id; delete groupData._rev
       if (window.utools?.db) {
@@ -191,7 +247,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
       deactivatedNames.push(g.name)
     }
     setEnvGroups(prev => prev.map(g => {
-      if (g.isLinked && g.isActive && g.id !== excludeGroupId) return { ...g, isActive: false, updatedAt: new Date().toISOString() }
+      if (g.chainId === chainId && g.isActive && g.id !== excludeGroupId) return { ...g, isActive: false, updatedAt: new Date().toISOString() }
       return g
     }))
     return deactivatedNames
@@ -221,8 +277,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
         }
       }
 
-      if (!currentActive && group.isLinked) {
-        const deactivatedNames = await deactivateLinkedGroups(groupId)
+      if (!currentActive && group.chainId) {
+        const deactivatedNames = await deactivateChainGroups(group.chainId, groupId)
         await executeToggleGroupActive(groupId, currentActive)
         if (deactivatedNames.length > 0) {
           showToast(`已自动停用 ${deactivatedNames.join('、')}，激活了 ${group.name}`, 'success')
@@ -279,8 +335,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     if (!conflictData) return
     setShowConflictModal(false)
     const group = conflictData.group
-    if (group.isLinked) {
-      const deactivatedNames = await deactivateLinkedGroups(conflictData.groupId)
+    if (group.chainId) {
+      const deactivatedNames = await deactivateChainGroups(group.chainId, conflictData.groupId)
       await executeToggleGroupActive(conflictData.groupId, false)
       if (deactivatedNames.length > 0) {
         showToast(`已自动停用 ${deactivatedNames.join('、')}，激活了 ${group.name}`, 'success')
@@ -296,8 +352,8 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     setShowConflictModal(false)
     const group = conflictData.group
     const skipNames = new Set(conflictData.conflicts.map(c => c.name))
-    if (group.isLinked) {
-      const deactivatedNames = await deactivateLinkedGroups(conflictData.groupId)
+    if (group.chainId) {
+      const deactivatedNames = await deactivateChainGroups(group.chainId, conflictData.groupId)
       await executeToggleGroupActive(conflictData.groupId, false, skipNames)
       if (deactivatedNames.length > 0) {
         showToast(`已自动停用 ${deactivatedNames.join('、')}，激活了 ${group.name}`, 'success')
@@ -380,13 +436,13 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
   }
 
   const openCreateModal = () => {
-    setModalMode('create'); setEditingGroup(null); setGroupName(''); setGroupDescription(''); setGroupVariables([{ name: '', value: '' }]); setShowModal(true)
+    setModalMode('create'); setEditingGroup(null); setGroupName(''); setGroupDescription(''); setGroupVariables([{ name: '', value: '' }]); setGroupChainId(null); setShowModal(true)
   }
   const openEditModal = (group) => {
-    setModalMode('edit'); setEditingGroup(group); setGroupName(group.name); setGroupDescription(group.description || ''); setGroupVariables([...group.variables]); setShowModal(true)
+    setModalMode('edit'); setEditingGroup(group); setGroupName(group.name); setGroupDescription(group.description || ''); setGroupVariables([...group.variables]); setGroupChainId(group.chainId || null); setShowModal(true)
   }
   const closeModal = () => {
-    setShowModal(false); setModalMode('create'); setEditingGroup(null); setGroupName(''); setGroupDescription(''); setGroupVariables([{ name: '', value: '' }])
+    setShowModal(false); setModalMode('create'); setEditingGroup(null); setGroupName(''); setGroupDescription(''); setGroupVariables([{ name: '', value: '' }]); setGroupChainId(null)
   }
   const addVariableToGroup = () => setGroupVariables([...groupVariables, { name: '', value: '' }])
   const removeVariableFromGroup = (index) => { if (groupVariables.length > 1) setGroupVariables(groupVariables.filter((_, i) => i !== index)) }
@@ -403,6 +459,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
       const groupData = {
         name: groupName.trim(), description: groupDescription.trim(), variables: validVariables,
         isActive: modalMode === 'edit' && editingGroup ? editingGroup.isActive : false,
+        chainId: groupChainId || null,
         isSystemVariable: false,
         createdAt: modalMode === 'edit' && editingGroup ? editingGroup.createdAt : new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -417,6 +474,26 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
       if (window.utools?.db) {
         const existingDoc = utools.db.get(`${prefix}${groupId}`)
         utools.db.put({ _id: `${prefix}${groupId}`, _rev: existingDoc?._rev, data: groupData })
+      }
+
+      if (modalMode === 'edit' && editingGroup?.isActive && isServiceAvailable()) {
+        const oldVarNames = new Set(editingGroup.variables.map(v => v.name).filter(Boolean))
+        const newVarNames = new Set(validVariables.map(v => v.name).filter(Boolean))
+        const removedVars = [...oldVarNames].filter(name => !newVarNames.has(name))
+        if (window.services?.removeEnvironmentVariable) {
+          for (const name of removedVars) {
+            try { await window.services.removeEnvironmentVariable(name) } catch {}
+          }
+        }
+        if (window.services?.setEnvironmentVariable) {
+          for (const v of validVariables) {
+            if (!v.name || !v.value) continue
+            try { await window.services.setEnvironmentVariable(v.name, v.value) } catch {}
+          }
+        }
+        if (window.services?.refreshEnvironment) {
+          try { await window.services.refreshEnvironment() } catch {}
+        }
       }
 
       await loadEnvironmentGroups()
@@ -484,19 +561,99 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     } catch (error) { showToast(`删除失败: ${error.message}`, 'error') }
   }
 
-  const toggleGroupLinked = (groupId) => {
+  const loadChains = () => {
+    try {
+      if (window.utools?.db) {
+        const allDocs = utools.db.allDocs(CHAIN_PREFIX)
+        const list = allDocs
+          .filter(doc => doc.data && doc.data.name)
+          .map(doc => ({ ...doc.data, id: doc._id.replace(CHAIN_PREFIX, ''), _rev: doc._rev }))
+        setChains(list)
+        return list
+      }
+    } catch {}
+    return []
+  }
+
+  const saveChain = (name, editId = null) => {
+    if (!name?.trim()) { showToast('请输入锁链名称', 'error'); return }
+    try {
+      const chainId = editId || `chain-${Date.now()}`
+      const chainData = {
+        name: name.trim(),
+        createdAt: editId && editingChain ? editingChain.createdAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+      if (window.utools?.db) {
+        const existingDoc = utools.db.get(`${CHAIN_PREFIX}${chainId}`)
+        utools.db.put({ _id: `${CHAIN_PREFIX}${chainId}`, _rev: existingDoc?._rev, data: chainData })
+      }
+      loadChains()
+      showToast(`锁链 "${name.trim()}" ${editId ? '更新' : '创建'}成功`, 'success')
+      return chainId
+    } catch (error) { showToast(`保存锁链失败: ${error.message}`, 'error'); return null }
+  }
+
+  const deleteChain = (chainId) => {
+    const chain = chains.find(c => c.id === chainId)
+    if (!chain) return
+    try {
+      if (window.utools?.db) utools.db.remove(`${CHAIN_PREFIX}${chainId}`)
+      const prefix = 'user-group-'
+      const groupsInChain = envGroups.filter(g => g.chainId === chainId)
+      for (const g of groupsInChain) {
+        const groupData = { ...g, chainId: null, updatedAt: new Date().toISOString() }
+        delete groupData.id; delete groupData._rev
+        if (window.utools?.db) {
+          const existingDoc = utools.db.get(`${prefix}${g.id}`)
+          utools.db.put({ _id: `${prefix}${g.id}`, _rev: existingDoc?._rev, data: groupData })
+        }
+      }
+      setEnvGroups(prev => prev.map(g => g.chainId === chainId ? { ...g, chainId: null, updatedAt: new Date().toISOString() } : g))
+      loadChains()
+      showToast(`锁链 "${chain.name}" 已删除`, 'success')
+    } catch (error) { showToast(`删除锁链失败: ${error.message}`, 'error') }
+  }
+
+  const assignGroupToChain = (groupId, chainId) => {
     const group = envGroups.find(g => g.id === groupId)
     if (!group) return
     const prefix = 'user-group-'
-    const newLinked = !group.isLinked
-    const groupData = { ...group, isLinked: newLinked, updatedAt: new Date().toISOString() }
+    const groupData = { ...group, chainId: chainId || null, updatedAt: new Date().toISOString() }
     delete groupData.id; delete groupData._rev
     if (window.utools?.db) {
       const existingDoc = utools.db.get(`${prefix}${groupId}`)
       utools.db.put({ _id: `${prefix}${groupId}`, _rev: existingDoc?._rev, data: groupData })
     }
-    setEnvGroups(prev => prev.map(g => g.id === groupId ? { ...g, isLinked: newLinked, updatedAt: new Date().toISOString() } : g))
-    showToast(`环境变量组 "${group.name}" 已${newLinked ? '加入' : '移出'}互斥锁链`, 'success')
+    setEnvGroups(prev => prev.map(g => g.id === groupId ? { ...g, chainId: chainId || null, updatedAt: new Date().toISOString() } : g))
+    setOpenChainDropdown(null)
+    if (chainId) {
+      const chainName = chains.find(c => c.id === chainId)?.name || ''
+      showToast(`"${group.name}" 已加入锁链 "${chainName}"`, 'success')
+    } else {
+      showToast(`"${group.name}" 已移出锁链`, 'success')
+    }
+  }
+
+  const openChainCreateModal = () => {
+    setChainModalMode('create'); setEditingChain(null); setChainName(''); setShowChainModal(true)
+  }
+  const openChainEditModal = (chain) => {
+    setChainModalMode('edit'); setEditingChain(chain); setChainName(chain.name); setShowChainModal(true)
+  }
+  const closeChainModal = () => {
+    setShowChainModal(false); setChainModalMode('create'); setEditingChain(null); setChainName(''); setIsCreatingChainFromGroupModal(false)
+  }
+  const handleSaveChain = () => {
+    const id = chainModalMode === 'edit' && editingChain ? editingChain.id : null
+    const result = saveChain(chainName, id)
+    if (result) {
+      if (isCreatingChainFromGroupModal) {
+        setGroupChainId(result)
+        setIsCreatingChainFromGroupModal(false)
+      }
+      closeChainModal()
+    }
   }
 
   const handleExportGroups = () => {
@@ -510,7 +667,9 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
       filters: [{ name: 'JSON 文件', extensions: ['json'] }],
     })
     if (!savePath) return
-    const payload = { type: 'env-groups-export', version: 1, exportedAt: new Date().toISOString(), groups: toExport.map(g => ({ name: g.name, description: g.description, variables: g.variables, isLinked: g.isLinked || false, createdAt: g.createdAt })) }
+    const chainIds = [...new Set(toExport.map(g => g.chainId).filter(Boolean))]
+    const exportChains = chains.filter(c => chainIds.includes(c.id)).map(c => ({ id: c.id, name: c.name }))
+    const payload = { type: 'env-groups-export', version: 2, exportedAt: new Date().toISOString(), chains: exportChains, groups: toExport.map(g => ({ name: g.name, description: g.description, variables: g.variables, chainId: g.chainId || null, createdAt: g.createdAt })) }
     try {
       window.services.writeFileText(savePath, JSON.stringify(payload, null, 2))
       showToast(`已导出 ${toExport.length} 个环境变量组`, 'success')
@@ -531,20 +690,39 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
         showToast('文件格式不正确', 'error'); return
       }
       const prefix = 'user-group-'
+      const chainIdMap = {}
+      if (Array.isArray(parsed.chains)) {
+        for (const c of parsed.chains) {
+          if (!c.name) continue
+          const existing = chains.find(ec => ec.name === c.name)
+          if (existing) { chainIdMap[c.id] = existing.id }
+          else {
+            const newId = `chain-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+            const chainData = { name: c.name, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+            if (window.utools?.db) utools.db.put({ _id: `${CHAIN_PREFIX}${newId}`, data: chainData })
+            chainIdMap[c.id] = newId
+          }
+        }
+      }
+      let hasLegacyLinked = false
       let imported = 0
       for (const group of parsed.groups) {
         if (!group.name || !Array.isArray(group.variables)) continue
         const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        let resolvedChainId = null
+        if (group.chainId && chainIdMap[group.chainId]) resolvedChainId = chainIdMap[group.chainId]
+        else if (group.isLinked) hasLegacyLinked = true
         const groupData = {
           name: group.name, description: group.description || '', variables: group.variables,
-          isActive: false, isLinked: group.isLinked || false, isSystemVariable: false,
+          isActive: false, chainId: resolvedChainId, isSystemVariable: false,
           createdAt: group.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString()
         }
         if (window.utools?.db) { utools.db.put({ _id: `${prefix}${groupId}`, data: groupData }) }
         imported++
       }
+      loadChains()
       loadEnvironmentGroups()
-      showToast(`成功导入 ${imported} 个环境变量组`, 'success')
+      showToast(`成功导入 ${imported} 个环境变量组${hasLegacyLinked ? '（旧版互斥标记已忽略，请手动分配锁链）' : ''}`, 'success')
     } catch (e) { showToast('导入失败: ' + e.message, 'error') }
   }
 
@@ -562,7 +740,7 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
     return new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
   })
 
-  useEffect(() => { loadEnvironmentGroups(); loadTemplates() }, [])
+  useEffect(() => { loadChains(); loadEnvironmentGroups(); loadTemplates() }, [])
   useEffect(() => { if (refreshTrigger > 0) loadEnvironmentGroups() }, [refreshTrigger])
 
   const formatDate = (dateStr) => {
@@ -654,6 +832,9 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
               <button onClick={() => { loadTemplates(); setShowTemplateManager(true) }} className="flex items-center gap-2 h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
                 <FileText className="w-4 h-4" /> 模板管理
               </button>
+              <button onClick={() => { loadChains(); setShowChainManager(true) }} className="flex items-center gap-2 h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                <Link className="w-4 h-4" /> 锁链管理
+              </button>
               <button onClick={openCreateModal} className="flex items-center gap-2 h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors">
                 <Plus className="w-4 h-4" /> 创建环境变量组
               </button>
@@ -716,9 +897,12 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <h3 className="text-base font-medium text-slate-900 dark:text-slate-100 truncate">{group.name}</h3>
-                            {group.isLinked && <Link className="w-4 h-4 text-violet-500 dark:text-violet-400 shrink-0" />}
                             <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium", group.isActive ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400" : "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400")}>{group.isActive ? '已激活' : '未激活'}</span>
-                            {group.isLinked && <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400">互斥</span>}
+                            {group.chainId && (() => { const cc = getChainColor(group.chainId); return (
+                              <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium", cc.bg, cc.text)}>
+                                <Link className="w-3 h-3" /> {getChainName(group.chainId)}
+                              </span>
+                            ) })()}
                           </div>
                           <div className="flex items-center gap-2 mt-0.5">
                             {group.description && <p className="text-sm text-slate-500 dark:text-slate-400 truncate">{group.description}</p>}
@@ -728,8 +912,13 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
                         <div className="text-sm text-slate-500 dark:text-slate-400 px-3 py-1 bg-slate-50 dark:bg-slate-700 rounded-lg">{group.variables.length} 个变量</div>
                       </div>
                       <div className="flex items-center gap-1 ml-4">
-                        <button onClick={() => toggleGroupLinked(group.id)} className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-colors", group.isLinked ? "text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 hover:bg-violet-100 dark:hover:bg-violet-900/50" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700")} title={group.isLinked ? '移出互斥锁链' : '加入互斥锁链'}>
-                          {group.isLinked ? <Link className="w-4 h-4" /> : <Unlink className="w-4 h-4" />}
+                        <button onClick={(e) => {
+                          if (openChainDropdown === group.id) { setOpenChainDropdown(null); return }
+                          const rect = e.currentTarget.getBoundingClientRect()
+                          setChainDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+                          setOpenChainDropdown(group.id)
+                        }} className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-colors", group.chainId ? cn(getChainColor(group.chainId).icon, getChainColor(group.chainId).btnBg) : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700")} title="锁链分配">
+                          {group.chainId ? <Link className="w-4 h-4" /> : <Unlink className="w-4 h-4" />}
                         </button>
                         <button onClick={() => openEditModal(group)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" title="编辑"><Edit2 className="w-4 h-4" /></button>
                         <button onClick={() => showDeleteConfirmation(group)} className="w-8 h-8 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" title="删除"><Trash2 className="w-4 h-4" /></button>
@@ -800,18 +989,36 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
                   className="w-full h-10 px-4 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg placeholder:text-slate-400 dark:placeholder:text-slate-500 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500" />
               </div>
               <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">互斥锁链 (可选)</label>
+                <div className="flex items-center gap-2">
+                  <CustomSelect
+                    value={groupChainId || ''}
+                    onChange={(val) => setGroupChainId(val || null)}
+                    options={[{ value: '', label: '无锁链' }, ...chains.map(c => ({ value: c.id, label: c.name }))]}
+                    placeholder="无锁链"
+                    className="flex-1"
+                  />
+                  <button type="button" onClick={() => {
+                    setIsCreatingChainFromGroupModal(true)
+                    openChainCreateModal()
+                  }} className="shrink-0 h-10 px-3 text-sm bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors flex items-center gap-1">
+                    <Plus className="w-4 h-4" /> 新建锁链
+                  </button>
+                </div>
+                <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">同一锁链中的环境变量组只能同时启用一个</p>
+              </div>
+              <div>
                 <div className="flex items-center justify-between mb-3">
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">环境变量 <span className="text-red-500">*</span></label>
                   <div className="flex items-center gap-2">
                     {templates.length > 0 && (
-                      <select
-                        defaultValue=""
-                        onChange={(e) => { if (e.target.value) { applyTemplateToGroup(e.target.value); e.target.value = '' } }}
-                        className="h-8 px-2 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20"
-                      >
-                        <option value="">从模板导入...</option>
-                        {templates.map(tpl => <option key={tpl.id} value={tpl.id}>{tpl.name} ({tpl.keys.length} 个变量)</option>)}
-                      </select>
+                      <CustomSelect
+                        value=""
+                        onChange={(val) => { if (val) applyTemplateToGroup(val) }}
+                        options={templates.map(tpl => ({ value: tpl.id, label: `${tpl.name} (${tpl.keys.length} 个变量)` }))}
+                        placeholder="从模板导入..."
+                        size="sm"
+                      />
                     )}
                     <button onClick={addVariableToGroup} className="flex items-center gap-1 h-8 px-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"><Plus className="w-4 h-4" /> 添加变量</button>
                   </div>
@@ -1036,6 +1243,116 @@ export default function EnvVarManager({ onOpenTrash, refreshTrigger, fontSetting
           </div>
         </div>
       )}
+
+      {/* Chain Manager Modal */}
+      {showChainManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => setShowChainManager(false)}>
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-800 rounded-xl shadow-xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">锁链管理</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">管理互斥锁链组，同一锁链内的环境变量组只能同时激活一个</p>
+              </div>
+              <button onClick={() => setShowChainManager(false)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {chains.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="w-14 h-14 bg-slate-100 dark:bg-slate-700 rounded-full flex items-center justify-center mb-4"><Link className="w-7 h-7 text-slate-400" /></div>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">暂无锁链，创建一个开始使用</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {chains.map((chain, ci) => {
+                    const cc = CHAIN_COLORS[ci % CHAIN_COLORS.length]
+                    const groupsInChain = envGroups.filter(g => g.chainId === chain.id)
+                    return (
+                      <div key={chain.id} className={cn("border rounded-lg p-4", cc.border, "bg-white dark:bg-slate-800")}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className={cn("w-3 h-3 rounded-full", cc.bg, cc.border, "border")} />
+                            <h4 className="text-sm font-medium text-slate-900 dark:text-slate-100">{chain.name}</h4>
+                            <span className="text-xs text-slate-500 dark:text-slate-400">{groupsInChain.length} 个组</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => openChainEditModal(chain)} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" title="编辑"><Edit2 className="w-4 h-4" /></button>
+                            <button onClick={() => deleteChain(chain.id)} className="w-8 h-8 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" title="删除"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                        </div>
+                        {groupsInChain.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {groupsInChain.map(g => (
+                              <span key={g.id} className={cn("inline-flex items-center gap-1 px-2 py-1 rounded text-xs", cc.bg, cc.text)}>
+                                {g.isActive && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+                                {g.name}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 dark:text-slate-500">暂无分配的环境变量组</p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200 dark:border-slate-700">
+              <button onClick={() => setShowChainManager(false)} className="h-10 px-4 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors">关闭</button>
+              <button onClick={openChainCreateModal} className="h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors flex items-center gap-2"><Plus className="w-4 h-4" /> 创建锁链</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Chain Create/Edit Modal */}
+      {showChainModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={closeChainModal}>
+          <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{chainModalMode === 'create' ? '创建锁链' : '编辑锁链'}</h2>
+              <button onClick={closeChainModal} className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">锁链名称 <span className="text-red-500">*</span></label>
+              <input type="text" value={chainName} onChange={(e) => setChainName(e.target.value)} placeholder="例如: Java 版本链"
+                className="w-full h-10 px-4 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg placeholder:text-slate-400 dark:placeholder:text-slate-500 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500" />
+            </div>
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-slate-200 dark:border-slate-700">
+              <button onClick={closeChainModal} className="h-10 px-4 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors">取消</button>
+              <button onClick={handleSaveChain} className="h-10 px-4 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium rounded-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors">{chainModalMode === 'create' ? '创建' : '保存'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {openChainDropdown && (<>
+        <div className="fixed inset-0 z-40" onClick={() => setOpenChainDropdown(null)} />
+        <div className="fixed z-50 w-48 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1"
+          style={{ top: chainDropdownPos.top, right: chainDropdownPos.right }}>
+          <button onClick={() => { const gid = openChainDropdown; setOpenChainDropdown(null); assignGroupToChain(gid, null) }}
+            className={cn("w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors", !(envGroups.find(g => g.id === openChainDropdown)?.chainId) ? "text-slate-900 dark:text-slate-100 font-medium" : "text-slate-600 dark:text-slate-400")}>
+            无锁链
+          </button>
+          {chains.map((chain, ci) => {
+            const cc = CHAIN_COLORS[ci % CHAIN_COLORS.length]
+            const currentGroup = envGroups.find(g => g.id === openChainDropdown)
+            return (
+              <button key={chain.id} onClick={() => { const gid = openChainDropdown; setOpenChainDropdown(null); assignGroupToChain(gid, chain.id) }}
+                className={cn("w-full text-left px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-2", currentGroup?.chainId === chain.id ? "font-medium" : "")}>
+                <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", cc.bg, cc.border, "border")} />
+                <span className={currentGroup?.chainId === chain.id ? "text-slate-900 dark:text-slate-100" : "text-slate-600 dark:text-slate-400"}>{chain.name}</span>
+              </button>
+            )
+          })}
+          <div className="border-t border-slate-200 dark:border-slate-700 mt-1 pt-1">
+            <button onClick={() => { setOpenChainDropdown(null); openChainCreateModal() }}
+              className="w-full text-left px-3 py-2 text-sm text-blue-600 dark:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-2">
+              <Plus className="w-3.5 h-3.5" /> 创建新锁链
+            </button>
+          </div>
+        </div>
+      </>)}
     </div>
   )
 }

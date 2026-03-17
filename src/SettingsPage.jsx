@@ -5,6 +5,7 @@ import {
   Terminal, GitCompare, ArrowLeftRight, Sun, Moon, Monitor
 } from 'lucide-react'
 import { cn } from './utils/cn'
+import CustomSelect from './components/CustomSelect'
 import { clampFontLevel, FONT_LEVEL_LABELS } from './utils/fontLevel'
 import { isWindows } from './utils/platform'
 
@@ -65,11 +66,22 @@ function getTemplatesFromDocs(docs) {
   })
   return templates.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
 }
+function getChainsFromDocs(docs) {
+  const chains = []
+  ;(docs || []).forEach(doc => {
+    if (!doc?._id || !doc?.data) return
+    if (doc._id.startsWith('env-chain-') && doc.data.name) {
+      chains.push({ id: doc._id.replace('env-chain-', ''), name: doc.data.name })
+    }
+  })
+  return chains.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+}
 function getBackupPreviewData(backup) {
   const uS = mapFromSnapshot(backup?.envSnapshots?.user), sS = mapFromSnapshot(backup?.envSnapshots?.system)
   const uF = mapFromDocs(backup?.docs, 'user'), sF = mapFromDocs(backup?.docs, 'system')
   const templates = getTemplatesFromDocs(backup?.docs)
-  return { userEntries: sortEntries(uS.size > 0 ? uS : uF), systemEntries: sortEntries(sS.size > 0 ? sS : sF), templates }
+  const chains = getChainsFromDocs(backup?.docs)
+  return { userEntries: sortEntries(uS.size > 0 ? uS : uF), systemEntries: sortEntries(sS.size > 0 ? sS : sF), templates, chains }
 }
 
 function ToggleSwitch({ checked, onChange, ariaLabel }) {
@@ -406,10 +418,11 @@ export default function SettingsPage({ onBack, appSettings, onUpdateAppSettings,
                 {appSettings?.history?.autoCleanupEnabled && (
                   <div>
                     <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">清理周期</label>
-                    <select value={appSettings?.history?.autoCleanupDays || 30} onChange={e => updateHistorySetting({ autoCleanupDays: Number(e.target.value) })}
-                      className="h-10 px-3 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500">
-                      {HISTORY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={appSettings?.history?.autoCleanupDays || 30}
+                      onChange={(val) => updateHistorySetting({ autoCleanupDays: Number(val) })}
+                      options={HISTORY_OPTIONS}
+                    />
                   </div>
                 )}
               </div>
@@ -511,6 +524,22 @@ export default function SettingsPage({ onBack, appSettings, onUpdateAppSettings,
                   </div>
                 </div>
               )}
+              {(previewData?.chains?.length || 0) > 0 && (
+                <div className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700">
+                  <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-600 flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-slate-900 dark:text-slate-100">互斥锁链</h4>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{previewData.chains.length} 个</span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto p-3 space-y-2">
+                    {previewData.chains.map((chain, i) => (
+                      <div key={i} className="p-2 bg-slate-50 dark:bg-slate-600 rounded-lg flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-violet-400 shrink-0" />
+                        <p className="text-xs font-medium text-slate-900 dark:text-slate-100">{chain.name}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-end gap-2 p-5 border-t border-slate-200 dark:border-slate-700">
               <button onClick={() => setPreviewBackupId('')} className="h-10 px-4 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600">关闭</button>
@@ -555,22 +584,22 @@ export default function SettingsPage({ onBack, appSettings, onUpdateAppSettings,
             <div className="p-5 space-y-4">
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">备份 A</label>
-                <select value={diffBackupA} onChange={e => setDiffBackupA(e.target.value)}
-                  className="w-full h-10 px-3 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500">
-                  {(backups || []).map(b => (
-                    <option key={b.id} value={b.id}>{b.name} ({BACKUP_SCOPE_LABELS[b.scope] || '全部'})</option>
-                  ))}
-                </select>
+                <CustomSelect
+                  value={diffBackupA}
+                  onChange={setDiffBackupA}
+                  options={(backups || []).map(b => ({ value: b.id, label: `${b.name} (${BACKUP_SCOPE_LABELS[b.scope] || '全部'})` }))}
+                  placeholder="选择备份..."
+                />
               </div>
               <div className="flex items-center justify-center"><ArrowLeftRight className="w-5 h-5 text-slate-400 dark:text-slate-500" /></div>
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2">备份 B</label>
-                <select value={diffBackupB} onChange={e => setDiffBackupB(e.target.value)}
-                  className="w-full h-10 px-3 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/10 dark:focus:ring-slate-400/20 focus:border-slate-300 dark:focus:border-slate-500">
-                  {(backups || []).map(b => (
-                    <option key={b.id} value={b.id}>{b.name} ({BACKUP_SCOPE_LABELS[b.scope] || '全部'})</option>
-                  ))}
-                </select>
+                <CustomSelect
+                  value={diffBackupB}
+                  onChange={setDiffBackupB}
+                  options={(backups || []).map(b => ({ value: b.id, label: `${b.name} (${BACKUP_SCOPE_LABELS[b.scope] || '全部'})` }))}
+                  placeholder="选择备份..."
+                />
               </div>
               {diffBackupA && diffBackupB && diffBackupA === diffBackupB && (
                 <p className="text-xs text-amber-600 dark:text-amber-400">请选择两个不同的备份</p>
